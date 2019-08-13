@@ -34,8 +34,8 @@ type entrylist []entry
 func run() error {
 
 	var (
-		name = kingpin.Arg("name", "filename").Required().String()
-		//usesysroot = kingpin.Flag("Use Root", "Should Sysroot be used").Default(true).Bool()
+		name       = kingpin.Arg("name", "filename").Required().String()
+		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
 	)
 
 	kingpin.Version("0.0.1")
@@ -57,10 +57,7 @@ func run() error {
 	}
 	pool := x509.NewCertPool()
 
-	err = certlist.verifyAllCerts(pool)
-	if err != nil {
-		return err
-	}
+	certlist.verifyAllCerts(pool, *usesysroot)
 
 	certlist.printCerts()
 
@@ -68,47 +65,45 @@ func run() error {
 
 }
 
-func verify(cert *x509.Certificate, pool *x509.CertPool) ([][]*x509.Certificate, error) {
-	//if usesysroot {
-	opts := x509.VerifyOptions{
-		Intermediates: pool,
+func verify(cert *x509.Certificate, pool *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
+	var opts x509.VerifyOptions
+	if usesysroot {
+		opts = x509.VerifyOptions{
+			Intermediates: pool,
+		}
+	} else {
+		opts = x509.VerifyOptions{
+			Intermediates: pool,
+			Roots:         x509.NewCertPool(),
+		}
 	}
-	//} else {
-	//	opts := x509.VerifyOptions{
-	//		Intermediates: pool,
-	//		Roots:         x509.NewCertPool(),
-	//	}
-	//}
 	chain, err := cert.Verify(opts)
 	if err != nil {
 		return nil, err
 	}
 	pool.AddCert(cert)
-	fmt.Println("[printf DEBUG] Verified Certificate!")
 	return chain, nil
 }
 
-func (e entrylist) verifyAllCerts(pool *x509.CertPool) (err error) {
+func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) {
 	wip, notdone := true, true
 	for wip && notdone {
 		wip, notdone = false, false
 		for idx, curentry := range e {
-			if curentry.chain == nil {
-				curentry.chain, err = verify(curentry.cert, pool)
-				if err == nil {
-					wip = true
-				}
-				curentry.verified = err
+			if curentry.chain != nil {
+				continue
 			}
-			notdone = notdone || (curentry.verified != nil)
+			curentry.chain, curentry.verified = verify(curentry.cert, pool, usesysroot)
+			if curentry.verified == nil {
+				wip = true
+			}
 			e[idx] = curentry
+			notdone = notdone || (curentry.verified != nil)
 		}
 	}
-	return
 }
 
-func (e entrylist) verifyAllCerts2(pool *x509.CertPool) (err error) {
-
+/*func (e entrylist) verifyAllCerts2(pool *x509.CertPool, usesysroot bool) {
 	tasks := e
 	oldlen := len(tasks) + 1
 	for len(tasks) > 0 && len(tasks) != oldlen {
@@ -116,17 +111,12 @@ func (e entrylist) verifyAllCerts2(pool *x509.CertPool) (err error) {
 		var curtask entry
 		curtask, tasks = tasks[0], tasks[1:]
 
-		chain, err := verify(curtask.cert, pool)
+		curtask.chain, curtask.verified := verify(curtask.cert, pool, usesysroot)
 		if err != nil {
-			curtask.verified = err
 			tasks = append(tasks, curtask)
-		} else {
-			curtask.verified = nil
 		}
-		curtask.chain = chain
 	}
-	return
-}
+}*/
 
 func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 	var el entrylist
@@ -136,8 +126,6 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 			return nil, err
 		}
 		el = append(el, entry{c, (name + " | Certificate: " + strconv.Itoa(i)), nil, nil})
-
-		fmt.Println("[printf DEBUG] Parsed Certificate!")
 	}
 	return el, nil
 }
@@ -150,10 +138,8 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 			break
 		}
 		if !strings.Contains(block.Type, "CERTIFICATE") {
-			fmt.Println("[printf DEBUG] Skiped Block")
 			continue
 		}
-		fmt.Println("[printf DEBUG] Decoded PEM block!")
 		blocklist = append(blocklist, block)
 		certPEM = rest
 	}
@@ -170,7 +156,6 @@ func readFile(name string) ([]byte, error) {
 		return nil, errors.Wrapf(err, "failed to open file %q", name)
 	}
 	defer file.Close()
-	fmt.Println("[printf DEBUG] Opened File!")
 
 	fileinfo, err := file.Stat()
 	if err != nil {
@@ -185,11 +170,10 @@ func readFile(name string) ([]byte, error) {
 			return nil, errors.Wrapf(err, "failed to open file %q", name)
 		}
 	}
-	fmt.Println("[printf DEBUG] Read File!")
 	return certPEM, nil
 }
 
-func (e entrylist) printCerts() (err error) {
+func (e entrylist) printCerts() {
 	//TODO
 	fmt.Println()
 	for _, curentry := range e {
@@ -204,65 +188,67 @@ func (e entrylist) printCerts() (err error) {
 			}
 		}
 	}
-	return
 }
 
 func printEntry(e entry, tabcount int) {
 	tab := strings.Repeat(" ", tabcount*4)
 	printName(e.cert.Subject)
-	fmt.Print(tab, "Subject       : ", printName(e.cert.Subject), "\n")
-	fmt.Print(tab, "Version       : ", e.cert.Version, "\n")
-	fmt.Print(tab, "Issued by     : ", printName(e.cert.Issuer), "\n")
-	fmt.Print(tab, "Valid since   : ", e.cert.NotBefore, "\n")
-	fmt.Print(tab, "Valid till    : ", e.cert.NotAfter, "\n")
-	fmt.Print(tab, "Key Usage     : ", e.cert.KeyUsage, "\n")
-	fmt.Print(tab, "Ext Key Usage : ", e.cert.ExtKeyUsage, "\n")
-	fmt.Print(tab, "CA            : ", e.cert.IsCA, "\n")
+	fmt.Println(tab, "Subject       :", printName(e.cert.Subject))
+	fmt.Println(tab, "Version       :", e.cert.Version)
+	fmt.Println(tab, "Issuer        :", printName(e.cert.Issuer))
+	fmt.Println(tab, "Validity:")
+	fmt.Println(tab, "  Not Before  :", e.cert.NotBefore)
+	fmt.Println(tab, "  Not After   :", e.cert.NotAfter)
+	fmt.Println(tab, "Key Usage     :", printKeyUsage(e.cert.KeyUsage))
+	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.cert.ExtKeyUsage))
+
+	fmt.Println(tab, "CA            :", e.cert.IsCA)
 
 	if temp := printAltNames(e.cert); temp != "" {
-		fmt.Print(tab, "Alt Names     : ", temp, "\n")
+		fmt.Println(tab, "Alt Names     :", temp)
 	}
 
-	fmt.Print(tab, "Sign Algo     : ", e.cert.SignatureAlgorithm, "\n")
+	fmt.Println(tab, "Sign Algo     :", e.cert.SignatureAlgorithm)
 
 	if e.verified == nil {
-		fmt.Print(tab, "Verified      : true\n")
+		fmt.Println(tab, "Verified      : true")
 	} else {
-		fmt.Print(tab, "Verified      : ", e.verified, "\n")
+		fmt.Println(tab, "Verified      : false,", e.verified)
 	}
 
-	fmt.Print(tab, "Source        : ", e.source, "\n")
+	fmt.Println(tab, "Source        :", e.source)
 	fmt.Println()
 }
 
-func printName(val pkix.Name) (ret string) {
-	ret = ""
+func printName(val pkix.Name) string {
+	var names []string
 	for _, v := range val.Country {
-		ret = ret + "C: " + v + " "
+		names = append(names, "C = "+v)
 	}
 	for _, v := range val.Organization {
-		ret = ret + "O: " + v + " "
+		names = append(names, "O = "+v)
 	}
 	for _, v := range val.OrganizationalUnit {
-		ret = ret + "OU: " + v + " "
+		names = append(names, "OU = "+v)
 	}
 	for _, v := range val.Locality {
-		ret = ret + "L: " + v + " "
+		names = append(names, "L = "+v)
 	}
 	for _, v := range val.Province {
-		ret = ret + "P: " + v + " "
+		names = append(names, "P = "+v)
 	}
 	for _, v := range val.StreetAddress {
-		ret = ret + "SA: " + v + " "
+		names = append(names, "SA = "+v)
 	}
 	if val.SerialNumber != "" {
-		ret = ret + "SN: " + val.SerialNumber + " "
+		names = append(names, "SN = "+val.SerialNumber)
 	}
 	if val.CommonName != "" {
-		ret = ret + "CN: " + val.CommonName + " "
+		names = append(names, "CN = "+val.CommonName)
 	}
-	return
+	return strings.Join(names, ", ")
 }
+
 func printAltNames(cert *x509.Certificate) string {
 	var names []string
 	for _, v := range cert.DNSNames {
@@ -283,45 +269,83 @@ func printAltNames(cert *x509.Certificate) string {
 	return strings.Join(names, ", ")
 }
 
-func printExtKeyUsage(val int) string {
-	switch val {
-	case 0:
-		return "Any"
-	case 1:
-		return "Server authentication"
-	case 2:
-		return "Any"
-	case 3:
-		return "Any"
-	case 4:
-		return "Any"
-	case 5:
-		return "Any"
-	case 6:
-		return "Any"
-	case 7:
-		return "Any"
-	case 8:
-		return "Any"
-	case 9:
-		return "Any"
-	case 10:
-		return "Any"
-	case 11:
-		return "Any"
-	default:
-		return "Any"
+func printKeyUsage(val x509.KeyUsage) string {
+	var names []string
+	if val&x509.KeyUsageDigitalSignature > 0 {
+		names = append(names, "Digital Signiture")
 	}
+	if val&x509.KeyUsageContentCommitment > 0 {
+		names = append(names, "Content Commitment")
+	}
+	if val&x509.KeyUsageKeyEncipherment > 0 {
+		names = append(names, "Key Encipherment")
+	}
+	if val&x509.KeyUsageDataEncipherment > 0 {
+		names = append(names, "Data Encipherment")
+	}
+	if val&x509.KeyUsageKeyAgreement > 0 {
+		names = append(names, "Key Agreement")
+	}
+	if val&x509.KeyUsageCertSign > 0 {
+		names = append(names, "Cert Sign")
+	}
+	if val&x509.KeyUsageCRLSign > 0 {
+		names = append(names, "CRL Sign")
+	}
+	if val&x509.KeyUsageEncipherOnly > 0 {
+		names = append(names, "Enciper Only")
+	}
+	if val&x509.KeyUsageDecipherOnly > 0 {
+		names = append(names, "Decipher Only")
+	}
+	return strings.Join(names, ", ")
+}
+
+func printExtKeyUsage(val []x509.ExtKeyUsage) string {
+	var names []string
+	for _, v := range val {
+		switch v {
+		case x509.ExtKeyUsageAny:
+			names = append(names, "Any")
+		case x509.ExtKeyUsageServerAuth:
+			names = append(names, "Server Authentication")
+		case x509.ExtKeyUsageClientAuth:
+			names = append(names, "Client Authentication")
+		case x509.ExtKeyUsageCodeSigning:
+			names = append(names, "Code Signing")
+		case x509.ExtKeyUsageEmailProtection:
+			names = append(names, "Email Protection")
+		case x509.ExtKeyUsageIPSECEndSystem:
+			names = append(names, "IPSEC End System")
+		case x509.ExtKeyUsageIPSECTunnel:
+			names = append(names, "IPSEC Tunnel")
+		case x509.ExtKeyUsageIPSECUser:
+			names = append(names, "IPSEC User")
+		case x509.ExtKeyUsageTimeStamping:
+			names = append(names, "Time Stamping")
+		case x509.ExtKeyUsageOCSPSigning:
+			names = append(names, "OCSP Signing")
+		case x509.ExtKeyUsageMicrosoftServerGatedCrypto:
+			names = append(names, "Microsoft Server Gated Crypto")
+		case x509.ExtKeyUsageNetscapeServerGatedCrypto:
+			names = append(names, "Netscape Server Gated Crypto")
+		case x509.ExtKeyUsageMicrosoftCommercialCodeSigning:
+			names = append(names, "Microsoft Commercial Code Signing")
+		case x509.ExtKeyUsageMicrosoftKernelCodeSigning:
+			names = append(names, "Microsoft Kernel Code Signing")
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 //[] output:
-//[] X509v3 Key Usage: critical
+//[X] X509v3 Key Usage: critical
 //[] X509v3 Extended Key Usage:
 //
 //[X]X509v3 Subject Alternative Name:
 //
 //
-//[] Parameter
-//[] ignore sys root certs
+//[X] Parameter
+//[X] ignore sys root certs
 //
 //[] verified reasoning

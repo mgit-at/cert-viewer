@@ -1,6 +1,6 @@
 //+build ignore
 
-package something
+package main
 
 import (
 	"crypto/x509"

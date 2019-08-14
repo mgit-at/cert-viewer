@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -57,7 +59,10 @@ func run() error {
 	}
 	pool := x509.NewCertPool()
 
-	certlist.verifyAllCerts(pool, *usesysroot)
+	err = certlist.verifyAllCerts(pool, *usesysroot)
+	if err != nil {
+		return err
+	}
 
 	certlist.printCerts()
 
@@ -85,7 +90,7 @@ func verify(cert *x509.Certificate, pool *x509.CertPool, usesysroot bool) ([][]*
 	return chain, nil
 }
 
-func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) {
+func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
 	wip, notdone := true, true
 	for wip && notdone {
 		wip, notdone = false, false
@@ -94,13 +99,17 @@ func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) {
 				continue
 			}
 			curentry.chain, curentry.verified = verify(curentry.cert, pool, usesysroot)
-			if curentry.verified == nil {
+			switch curentry.verified.(type) {
+			case x509.SystemRootsError:
+				return curentry.verified
+			case nil:
 				wip = true
 			}
-			e[idx] = curentry
 			notdone = notdone || (curentry.verified != nil)
+			e[idx] = curentry
 		}
 	}
+	return nil
 }
 
 /*func (e entrylist) verifyAllCerts2(pool *x509.CertPool, usesysroot bool) {
@@ -123,7 +132,7 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 	for i, block := range blocklist {
 		c, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrapf(err, "failed to parse PEM block")
 		}
 		el = append(el, entry{c, (name + " | Certificate: " + strconv.Itoa(i)), nil, nil})
 	}
@@ -144,7 +153,7 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 		certPEM = rest
 	}
 	if blocklist == nil {
-		return nil, errors.New("no certificates to check")
+		return nil, errors.New("No certificates to check")
 	}
 	return blocklist, nil
 }
@@ -174,15 +183,13 @@ func readFile(name string) ([]byte, error) {
 }
 
 func (e entrylist) printCerts() {
-	//TODO
 	fmt.Println()
 	for _, curentry := range e {
 		printEntry(curentry, 0)
 		for _, chainval := range curentry.chain {
 			for certidx, certval := range chainval {
 				if certval != curentry.cert {
-					// string together chain source
-					cert := entry{certval, "Chain off: " + curentry.source, nil, nil}
+					cert := entry{certval, "Chain from: " + curentry.source, nil, nil}
 					printEntry(cert, certidx)
 				}
 			}
@@ -195,27 +202,25 @@ func printEntry(e entry, tabcount int) {
 	printName(e.cert.Subject)
 	fmt.Println(tab, "Subject       :", printName(e.cert.Subject))
 	fmt.Println(tab, "Version       :", e.cert.Version)
+	fmt.Println(tab, "Serial Number :", hexdump(e.cert.SerialNumber.Bytes()))
+	fmt.Println(tab, "Sign Algo     :", e.cert.SignatureAlgorithm)
 	fmt.Println(tab, "Issuer        :", printName(e.cert.Issuer))
 	fmt.Println(tab, "Validity:")
 	fmt.Println(tab, "  Not Before  :", e.cert.NotBefore)
 	fmt.Println(tab, "  Not After   :", e.cert.NotAfter)
 	fmt.Println(tab, "Key Usage     :", printKeyUsage(e.cert.KeyUsage))
-	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.cert.ExtKeyUsage))
-
-	fmt.Println(tab, "CA            :", e.cert.IsCA)
+	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.cert))
 
 	if temp := printAltNames(e.cert); temp != "" {
 		fmt.Println(tab, "Alt Names     :", temp)
 	}
-
-	fmt.Println(tab, "Sign Algo     :", e.cert.SignatureAlgorithm)
+	fmt.Println(tab, "CA            :", e.cert.IsCA)
 
 	if e.verified == nil {
 		fmt.Println(tab, "Verified      : true")
 	} else {
 		fmt.Println(tab, "Verified      : false,", e.verified)
 	}
-
 	fmt.Println(tab, "Source        :", e.source)
 	fmt.Println()
 }
@@ -256,15 +261,12 @@ func printAltNames(cert *x509.Certificate) string {
 	}
 	for _, v := range cert.EmailAddresses {
 		names = append(names, "EMAIL:"+v)
-
 	}
 	for _, v := range cert.IPAddresses {
 		names = append(names, "IP:"+string(v))
-
 	}
 	for _, v := range cert.URIs {
 		names = append(names, "URI:"+v.RawQuery)
-
 	}
 	return strings.Join(names, ", ")
 }
@@ -301,9 +303,9 @@ func printKeyUsage(val x509.KeyUsage) string {
 	return strings.Join(names, ", ")
 }
 
-func printExtKeyUsage(val []x509.ExtKeyUsage) string {
+func printExtKeyUsage(cert *x509.Certificate) string {
 	var names []string
-	for _, v := range val {
+	for _, v := range cert.ExtKeyUsage {
 		switch v {
 		case x509.ExtKeyUsageAny:
 			names = append(names, "Any")
@@ -335,12 +337,28 @@ func printExtKeyUsage(val []x509.ExtKeyUsage) string {
 			names = append(names, "Microsoft Kernel Code Signing")
 		}
 	}
+	names = append(names, printUnknownExtKeyUsage(cert.UnknownExtKeyUsage))
 	return strings.Join(names, ", ")
+}
+func printUnknownExtKeyUsage(val []asn1.ObjectIdentifier) string {
+	var names []string
+	for _, v := range val {
+		names = append(names, v.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+func hexdump(val []byte) string {
+	var names []string
+	for _, v := range val {
+		names = append(names, hex.EncodeToString([]byte{v}))
+	}
+	return strings.Join(names, ":")
 }
 
 //[] output:
 //[X] X509v3 Key Usage: critical
-//[] X509v3 Extended Key Usage:
+//[X] X509v3 Extended Key Usage:
 //
 //[X]X509v3 Subject Alternative Name:
 //

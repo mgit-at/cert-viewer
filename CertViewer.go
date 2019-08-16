@@ -17,13 +17,6 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
-func main() {
-	err := run()
-	if err != nil {
-		log.Fatal("[ERROR] ", err)
-	}
-}
-
 type entry struct {
 	cert     *x509.Certificate
 	source   string
@@ -32,6 +25,14 @@ type entry struct {
 }
 
 type entrylist []entry
+
+func main() {
+	err := run()
+	if err != nil {
+		log.Fatal("[ERROR] ", err)
+	}
+	fmt.Println(38.5 - (8.63 + 8.15 + 8 + 7.7))
+}
 
 func run() error {
 
@@ -70,24 +71,59 @@ func run() error {
 
 }
 
-func verify(cert *x509.Certificate, pool *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
-	var opts x509.VerifyOptions
-	if usesysroot {
-		opts = x509.VerifyOptions{
-			Intermediates: pool,
-		}
-	} else {
-		opts = x509.VerifyOptions{
-			Intermediates: pool,
-			Roots:         x509.NewCertPool(),
-		}
-	}
-	chain, err := cert.Verify(opts)
+func readFile(name string) ([]byte, error) {
+	var certPEM []byte
+	file, err := os.Open(name)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "failed to open file %q", name)
 	}
-	pool.AddCert(cert)
-	return chain, nil
+	defer file.Close()
+
+	fileinfo, err := file.Stat()
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to open file %q", name)
+	}
+	filesize := fileinfo.Size()
+
+	certPEM = make([]byte, filesize)
+	for n := 1; n != 0; {
+		n, err = file.Read(certPEM)
+		if err != nil && n != 0 {
+			return nil, errors.Wrapf(err, "failed to open file %q", name)
+		}
+	}
+	return certPEM, nil
+}
+
+func decode(certPEM []byte) ([]*pem.Block, error) {
+	var blocklist []*pem.Block
+	for {
+		block, rest := pem.Decode(certPEM)
+		if block == nil {
+			break
+		}
+		if !strings.Contains(block.Type, "CERTIFICATE") {
+			continue
+		}
+		blocklist = append(blocklist, block)
+		certPEM = rest
+	}
+	if blocklist == nil {
+		return nil, errors.New("No certificates to check")
+	}
+	return blocklist, nil
+}
+
+func parse(blocklist []*pem.Block, name string) (entrylist, error) {
+	var el entrylist
+	for i, block := range blocklist {
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse PEM block")
+		}
+		el = append(el, entry{c, (name + " | Certificate: " + strconv.Itoa(i)), nil, nil})
+	}
+	return el, nil
 }
 
 func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
@@ -112,74 +148,24 @@ func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
 	return nil
 }
 
-/*func (e entrylist) verifyAllCerts2(pool *x509.CertPool, usesysroot bool) {
-	tasks := e
-	oldlen := len(tasks) + 1
-	for len(tasks) > 0 && len(tasks) != oldlen {
-		oldlen = len(tasks)
-		var curtask entry
-		curtask, tasks = tasks[0], tasks[1:]
-
-		curtask.chain, curtask.verified := verify(curtask.cert, pool, usesysroot)
-		if err != nil {
-			tasks = append(tasks, curtask)
+func verify(cert *x509.Certificate, pool *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
+	var opts x509.VerifyOptions
+	if usesysroot {
+		opts = x509.VerifyOptions{
+			Intermediates: pool,
+		}
+	} else {
+		opts = x509.VerifyOptions{
+			Intermediates: pool,
+			Roots:         x509.NewCertPool(),
 		}
 	}
-}*/
-
-func parse(blocklist []*pem.Block, name string) (entrylist, error) {
-	var el entrylist
-	for i, block := range blocklist {
-		c, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to parse PEM block")
-		}
-		el = append(el, entry{c, (name + " | Certificate: " + strconv.Itoa(i)), nil, nil})
-	}
-	return el, nil
-}
-
-func decode(certPEM []byte) ([]*pem.Block, error) {
-	var blocklist []*pem.Block
-	for {
-		block, rest := pem.Decode(certPEM)
-		if block == nil {
-			break
-		}
-		if !strings.Contains(block.Type, "CERTIFICATE") {
-			continue
-		}
-		blocklist = append(blocklist, block)
-		certPEM = rest
-	}
-	if blocklist == nil {
-		return nil, errors.New("No certificates to check")
-	}
-	return blocklist, nil
-}
-
-func readFile(name string) ([]byte, error) {
-	var certPEM []byte
-	file, err := os.Open(name)
+	chain, err := cert.Verify(opts)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open file %q", name)
+		return nil, err
 	}
-	defer file.Close()
-
-	fileinfo, err := file.Stat()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open file %q", name)
-	}
-	filesize := fileinfo.Size()
-
-	certPEM = make([]byte, filesize)
-	for n := 1; n != 0; {
-		n, err = file.Read(certPEM)
-		if err != nil && n != 0 {
-			return nil, errors.Wrapf(err, "failed to open file %q", name)
-		}
-	}
-	return certPEM, nil
+	pool.AddCert(cert)
+	return chain, nil
 }
 
 func (e entrylist) printCerts() {
@@ -355,15 +341,3 @@ func hexdump(val []byte) string {
 	}
 	return strings.Join(names, ":")
 }
-
-//[] output:
-//[X] X509v3 Key Usage: critical
-//[X] X509v3 Extended Key Usage:
-//
-//[X]X509v3 Subject Alternative Name:
-//
-//
-//[X] Parameter
-//[X] ignore sys root certs
-//
-//[] verified reasoning

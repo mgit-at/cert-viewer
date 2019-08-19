@@ -31,7 +31,6 @@ func main() {
 	if err != nil {
 		log.Fatal("[ERROR] ", err)
 	}
-	fmt.Println(38.5 - (8.63 + 8.15 + 8 + 7.7))
 }
 
 func run() error {

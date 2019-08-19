@@ -38,6 +38,7 @@ func run() error {
 	var (
 		name       = kingpin.Arg("name", "filename").Required().String()
 		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
+		//recognizeroots = kingpin.Flag("recognizeroots", "Should Selfsigned certificates be recognized as root").Default("false").Bool()
 	)
 
 	kingpin.Version("0.0.1")
@@ -57,9 +58,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	pool := x509.NewCertPool()
 
-	err = certlist.verifyAllCerts(pool, *usesysroot)
+	err = certlist.verifyAllCerts(*usesysroot)
 	if err != nil {
 		return err
 	}
@@ -70,6 +70,7 @@ func run() error {
 
 }
 
+// readFile attempts to read the file, that is passed by parameter
 func readFile(name string) ([]byte, error) {
 	var certPEM []byte
 	file, err := os.Open(name)
@@ -125,7 +126,17 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 	return el, nil
 }
 
-func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
+func (e entrylist) verifyAllCerts(usesysroot bool) error {
+
+	pool, roots := x509.NewCertPool(), x509.NewCertPool()
+	if usesysroot {
+		var err error
+		roots, err = x509.SystemCertPool()
+		if err != nil {
+			return err
+		}
+	}
+
 	wip, notdone := true, true
 	for wip && notdone {
 		wip, notdone = false, false
@@ -133,7 +144,7 @@ func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
 			if curentry.chain != nil {
 				continue
 			}
-			curentry.chain, curentry.verified = verify(curentry.cert, pool, usesysroot)
+			curentry.chain, curentry.verified = verify(curentry.cert, pool, roots, usesysroot)
 			switch curentry.verified.(type) {
 			case x509.SystemRootsError:
 				return curentry.verified
@@ -147,17 +158,14 @@ func (e entrylist) verifyAllCerts(pool *x509.CertPool, usesysroot bool) error {
 	return nil
 }
 
-func verify(cert *x509.Certificate, pool *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
+func verify(cert *x509.Certificate, pool *x509.CertPool, root *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
 	var opts x509.VerifyOptions
-	if usesysroot {
-		opts = x509.VerifyOptions{
-			Intermediates: pool,
-		}
-	} else {
-		opts = x509.VerifyOptions{
-			Intermediates: pool,
-			Roots:         x509.NewCertPool(),
-		}
+	if isSelfSignedRoot(cert) {
+		root.AddCert(cert)
+	}
+	opts = x509.VerifyOptions{
+		Intermediates: pool,
+		Roots:         root,
 	}
 	chain, err := cert.Verify(opts)
 	if err != nil {
@@ -179,7 +187,16 @@ func (e entrylist) printCerts() {
 				}
 			}
 		}
+		fmt.Println("---------------------------------------------------------------------------------------------------------")
+		fmt.Println()
 	}
+}
+
+func isSelfSignedRoot(cert *x509.Certificate) bool {
+	if cert.AuthorityKeyId != nil {
+		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId)
+	}
+	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }
 
 func printEntry(e entry, tabcount int) {
@@ -202,7 +219,11 @@ func printEntry(e entry, tabcount int) {
 	fmt.Println(tab, "CA            :", e.cert.IsCA)
 
 	if e.verified == nil {
-		fmt.Println(tab, "Verified      : true")
+		if selfsigned := isSelfSignedRoot(e.cert); selfsigned {
+			fmt.Println(tab, "Self signed   :", isSelfSignedRoot(e.cert))
+		} else {
+			fmt.Println(tab, "Verified      : true")
+		}
 	} else {
 		fmt.Println(tab, "Verified      : false,", e.verified)
 	}

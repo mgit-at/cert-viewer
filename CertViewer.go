@@ -5,8 +5,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
@@ -17,9 +19,16 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
+/*
+features:
+multiple files
+split source into 2 / source and sourcepos
+json output
+*/
+
 type entry struct {
 	cert     *x509.Certificate
-	source   string
+	Source   string `json:"source"`
 	chain    [][]*x509.Certificate
 	verified error
 }
@@ -27,71 +36,48 @@ type entry struct {
 type entrylist []entry
 
 func main() {
-	err := run()
-	if err != nil {
+	if err := run(); err != nil {
 		log.Fatal("[ERROR] ", err)
 	}
 }
 
 func run() error {
-
 	var (
 		name       = kingpin.Arg("name", "filename").Required().String()
 		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
 	)
-
 	kingpin.Version("0.0.1")
 	kingpin.Parse()
 
-	certPEM, err := readFile(*name)
+	certPEM, err := ioutil.ReadFile(*name)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "failed to read file %q", *name)
 	}
 
 	blocklist, err := decode(certPEM)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to decode PEM")
 	}
 
 	certlist, err := parse(blocklist, *name)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to parse")
 	}
 
-	err = certlist.verifyAllCerts(*usesysroot)
-	if err != nil {
-		return err
+	if err := certlist.verifyAllCerts(*usesysroot); err != nil {
+		return errors.Wrap(err, "failed to verify")
 	}
 
 	certlist.printCerts()
 
+	data, err := json.MarshalIndent(certlist, "", "  ")
+	fmt.Fprintf(os.Stdout, "%s\n", data)
+
+	//	chain := certlist.mergeChain()
+	//
+	//	printChain(chain)
+
 	return nil
-
-}
-
-// readFile attempts to read the file, that is passed by parameter
-func readFile(name string) ([]byte, error) {
-	var certPEM []byte
-	file, err := os.Open(name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open file %q", name)
-	}
-	defer file.Close()
-
-	fileinfo, err := file.Stat()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open file %q", name)
-	}
-	filesize := fileinfo.Size()
-
-	certPEM = make([]byte, filesize)
-	for n := 1; n != 0; {
-		n, err = file.Read(certPEM)
-		if err != nil && n != 0 {
-			return nil, errors.Wrapf(err, "failed to open file %q", name)
-		}
-	}
-	return certPEM, nil
 }
 
 func decode(certPEM []byte) ([]*pem.Block, error) {
@@ -107,7 +93,7 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 		blocklist = append(blocklist, block)
 		certPEM = rest
 	}
-	if blocklist == nil {
+	if len(blocklist) == 0 {
 		return nil, errors.New("No certificates to check")
 	}
 	return blocklist, nil
@@ -120,13 +106,16 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse PEM block")
 		}
-		el = append(el, entry{c, (name + " | Certificate: " + strconv.Itoa(i)), nil, nil})
+		e := entry{
+			cert:   c,
+			Source: name + " | Certificate: " + strconv.Itoa(i),
+		}
+		el = append(el, e)
 	}
 	return el, nil
 }
 
 func (el entrylist) verifyAllCerts(usesysroot bool) error {
-
 	pool, roots := x509.NewCertPool(), x509.NewCertPool()
 	if usesysroot {
 		var err error
@@ -144,7 +133,7 @@ func (el entrylist) verifyAllCerts(usesysroot bool) error {
 				continue
 			}
 			curentry.chain, curentry.verified = verify(curentry, pool, roots)
-			switch curentry.verified.(type) {
+			switch errors.Cause(curentry.verified).(type) {
 			case x509.SystemRootsError:
 				return curentry.verified
 			case nil:
@@ -158,7 +147,6 @@ func (el entrylist) verifyAllCerts(usesysroot bool) error {
 }
 
 func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certificate, error) {
-
 	if isSelfSignedRoot(e.cert) {
 		root.AddCert(e.cert)
 	}
@@ -175,24 +163,6 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 	return chain, nil
 }
 
-func (el entrylist) printCerts() {
-	fmt.Println()
-	for _, curentry := range el {
-		printEntry(curentry, 0)
-		for _, chainval := range curentry.chain {
-			for certidx, certval := range chainval {
-				if certval != curentry.cert {
-					cert := entry{certval, "Chain from: " + curentry.source, nil, nil}
-					fmt.Println("-  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  ")
-					printEntry(cert, certidx)
-				}
-			}
-		}
-		fmt.Println("------------------------------------------------------------------------------------------------------------")
-		fmt.Println()
-	}
-}
-
 func isSelfSignedRoot(cert *x509.Certificate) bool {
 	if cert.AuthorityKeyId != nil {
 		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
@@ -200,12 +170,92 @@ func isSelfSignedRoot(cert *x509.Certificate) bool {
 	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }
 
+/*
+func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
+	var comchain [][]*x509.Certificate
+	maxsize := 0
+	for _, v := range el {
+		for _, c := range v.chain {
+			comchain = append(comchain, c)
+			if len(c) > maxsize {
+				maxsize = len(c)
+			}
+		}
+	}
+
+	var redchain [][]*x509.Certificate
+	redchain = append(redchain, comchain[0])
+	if len(comchain) > 1 {
+		for i, v := range comchain[1:] {
+			if !compareChain(comchain[i], v) {
+				redchain = append(redchain, v)
+			}
+		}
+	}
+	return redchain, nil
+}
+
+func compareChain(chain1, chain2 []*x509.Certificate) bool {
+	if len(chain1) < len(chain2) {
+		chain1, chain2 = chain2, chain1
+	}
+	dif := len(chain1) - len(chain2)
+	for i := len(chain1) - 1; i > 0; i-- {
+		if chain1[i] != chain2[i-dif] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func compareCert(cert1, cert2 *x509.Certificate) bool {
+	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
+}
+
+func printChain(chain [][]*x509.Certificate) {
+	for _, chainval := range chain {
+		for certidx, certval := range chainval {
+			//if certval != curentry.cert {
+			//cert := entry{certval, "Chain from: "  + curentry.source, nil, nil}
+			//cert := entry{certval, "Chain from: ", nil, nil}
+			fmt.Println("-  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  ")
+			printEntry(cert, certidx)
+			//}
+		}
+	}
+	fmt.Println("------------------------------------------------------------------------------------------------------------")
+	fmt.Println()
+}*/
+
+func (el entrylist) printCerts() {
+	fmt.Println()
+	for i, curentry := range el {
+
+		if i > 0 {
+			fmt.Println(strings.Repeat("=", 100))
+			fmt.Println()
+		}
+
+		printEntry(curentry, 0)
+		for _, chainval := range curentry.chain {
+			for certidx, certval := range chainval {
+				if certval != curentry.cert {
+					cert := entry{certval, "Chain from: " + curentry.Source, nil, nil}
+					fmt.Println(strings.Repeat("- ", 50))
+					printEntry(cert, certidx)
+				}
+			}
+		}
+	}
+}
+
 func printEntry(e entry, tabcount int) {
 	tab := strings.Repeat(" ", tabcount*4)
 	printName(e.cert.Subject)
 	fmt.Println(tab, "Subject       :", printName(e.cert.Subject))
 	fmt.Println(tab, "Version       :", e.cert.Version)
-	fmt.Println(tab, "Serial Number :", hexdump(e.cert.SerialNumber.Bytes()))
+	fmt.Println(tab, "Serial Number :", encodeHex(e.cert.SerialNumber.Bytes()))
 	fmt.Println(tab, "Sign Algo     :", e.cert.SignatureAlgorithm)
 	fmt.Println(tab, "Issuer        :", printName(e.cert.Issuer))
 	fmt.Println(tab, "Validity:")
@@ -228,7 +278,7 @@ func printEntry(e entry, tabcount int) {
 	} else {
 		fmt.Println(tab, "Verified      : false,", e.verified)
 	}
-	fmt.Println(tab, "Source        :", e.source)
+	fmt.Println(tab, "Source        :", e.Source)
 	fmt.Println()
 }
 
@@ -355,7 +405,7 @@ func printUnknownExtKeyUsage(val []asn1.ObjectIdentifier) string {
 	return strings.Join(names, ", ")
 }
 
-func hexdump(val []byte) string {
+func encodeHex(val []byte) string {
 	var names []string
 	for _, v := range val {
 		names = append(names, hex.EncodeToString([]byte{v}))

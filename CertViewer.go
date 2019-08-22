@@ -38,7 +38,6 @@ func run() error {
 	var (
 		name       = kingpin.Arg("name", "filename").Required().String()
 		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
-		//recognizeroots = kingpin.Flag("recognizeroots", "Should Selfsigned certificates be recognized as root").Default("false").Bool()
 	)
 
 	kingpin.Version("0.0.1")
@@ -126,7 +125,7 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 	return el, nil
 }
 
-func (e entrylist) verifyAllCerts(usesysroot bool) error {
+func (el entrylist) verifyAllCerts(usesysroot bool) error {
 
 	pool, roots := x509.NewCertPool(), x509.NewCertPool()
 	if usesysroot {
@@ -140,11 +139,11 @@ func (e entrylist) verifyAllCerts(usesysroot bool) error {
 	wip, notdone := true, true
 	for wip && notdone {
 		wip, notdone = false, false
-		for idx, curentry := range e {
+		for idx, curentry := range el {
 			if curentry.chain != nil {
 				continue
 			}
-			curentry.chain, curentry.verified = verify(curentry.cert, pool, roots, usesysroot)
+			curentry.chain, curentry.verified = verify(curentry, pool, roots)
 			switch curentry.verified.(type) {
 			case x509.SystemRootsError:
 				return curentry.verified
@@ -152,49 +151,51 @@ func (e entrylist) verifyAllCerts(usesysroot bool) error {
 				wip = true
 			}
 			notdone = notdone || (curentry.verified != nil)
-			e[idx] = curentry
+			el[idx] = curentry
 		}
 	}
 	return nil
 }
 
-func verify(cert *x509.Certificate, pool *x509.CertPool, root *x509.CertPool, usesysroot bool) ([][]*x509.Certificate, error) {
-	var opts x509.VerifyOptions
-	if isSelfSignedRoot(cert) {
-		root.AddCert(cert)
+func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certificate, error) {
+
+	if isSelfSignedRoot(e.cert) {
+		root.AddCert(e.cert)
 	}
-	opts = x509.VerifyOptions{
+	opts := x509.VerifyOptions{
 		Intermediates: pool,
 		Roots:         root,
 	}
-	chain, err := cert.Verify(opts)
+
+	chain, err := e.cert.Verify(opts)
 	if err != nil {
 		return nil, err
 	}
-	pool.AddCert(cert)
+	pool.AddCert(e.cert)
 	return chain, nil
 }
 
-func (e entrylist) printCerts() {
+func (el entrylist) printCerts() {
 	fmt.Println()
-	for _, curentry := range e {
+	for _, curentry := range el {
 		printEntry(curentry, 0)
 		for _, chainval := range curentry.chain {
 			for certidx, certval := range chainval {
 				if certval != curentry.cert {
 					cert := entry{certval, "Chain from: " + curentry.source, nil, nil}
+					fmt.Println("-  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  ")
 					printEntry(cert, certidx)
 				}
 			}
 		}
-		fmt.Println("---------------------------------------------------------------------------------------------------------")
+		fmt.Println("------------------------------------------------------------------------------------------------------------")
 		fmt.Println()
 	}
 }
 
 func isSelfSignedRoot(cert *x509.Certificate) bool {
 	if cert.AuthorityKeyId != nil {
-		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId)
+		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
 	}
 	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }

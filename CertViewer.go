@@ -5,12 +5,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 
@@ -20,17 +18,19 @@ import (
 )
 
 /*
-features:
-multiple files
-split source into 2 / source and sourcepos
-json output
+upcoming features:
+[ ] multiple files
+[x] split source into 2 / source and sourcepos
+[ ] json output
+[ ] remove subchain output
 */
 
 type entry struct {
-	cert     *x509.Certificate
-	Source   string `json:"source"`
-	chain    [][]*x509.Certificate
-	verified error
+	Cert      *x509.Certificate     `json:"certificate"`
+	Source    string                `json:"source"`
+	SourcePos int                   `json:"sourcepos"`
+	Chain     [][]*x509.Certificate `json:"chain"`
+	Verified  error                 `json:"Verified"`
 }
 
 type entrylist []entry
@@ -68,14 +68,17 @@ func run() error {
 		return errors.Wrap(err, "failed to verify")
 	}
 
-	certlist.printCerts()
+	//certlist.printCerts()
 
-	data, err := json.MarshalIndent(certlist, "", "  ")
-	fmt.Fprintf(os.Stdout, "%s\n", data)
+	//data, err := json.MarshalIndent(certlist, "", "  ")
+	//fmt.Fprintf(os.Stdout, "%s\n", data)
 
-	//	chain := certlist.mergeChain()
-	//
-	//	printChain(chain)
+	chain, err := certlist.mergeChain()
+	if err != nil {
+		return errors.Wrap(err, "failed to parse")
+	}
+
+	certlist.printChain(chain)
 
 	return nil
 }
@@ -107,8 +110,9 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 			return nil, errors.Wrapf(err, "failed to parse PEM block")
 		}
 		e := entry{
-			cert:   c,
-			Source: name + " | Certificate: " + strconv.Itoa(i),
+			Cert:      c,
+			Source:    name,
+			SourcePos: i,
 		}
 		el = append(el, e)
 	}
@@ -129,17 +133,17 @@ func (el entrylist) verifyAllCerts(usesysroot bool) error {
 	for wip && notdone {
 		wip, notdone = false, false
 		for idx, curentry := range el {
-			if curentry.chain != nil {
+			if curentry.Chain != nil {
 				continue
 			}
-			curentry.chain, curentry.verified = verify(curentry, pool, roots)
-			switch errors.Cause(curentry.verified).(type) {
+			curentry.Chain, curentry.Verified = verify(curentry, pool, roots)
+			switch errors.Cause(curentry.Verified).(type) {
 			case x509.SystemRootsError:
-				return curentry.verified
+				return curentry.Verified
 			case nil:
 				wip = true
 			}
-			notdone = notdone || (curentry.verified != nil)
+			notdone = notdone || (curentry.Verified != nil)
 			el[idx] = curentry
 		}
 	}
@@ -147,19 +151,19 @@ func (el entrylist) verifyAllCerts(usesysroot bool) error {
 }
 
 func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certificate, error) {
-	if isSelfSignedRoot(e.cert) {
-		root.AddCert(e.cert)
+	if isSelfSignedRoot(e.Cert) {
+		root.AddCert(e.Cert)
 	}
 	opts := x509.VerifyOptions{
 		Intermediates: pool,
 		Roots:         root,
 	}
 
-	chain, err := e.cert.Verify(opts)
+	chain, err := e.Cert.Verify(opts)
 	if err != nil {
 		return nil, err
 	}
-	pool.AddCert(e.cert)
+	pool.AddCert(e.Cert)
 	return chain, nil
 }
 
@@ -170,12 +174,11 @@ func isSelfSignedRoot(cert *x509.Certificate) bool {
 	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }
 
-/*
 func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
 	var comchain [][]*x509.Certificate
 	maxsize := 0
 	for _, v := range el {
-		for _, c := range v.chain {
+		for _, c := range v.Chain {
 			comchain = append(comchain, c)
 			if len(c) > maxsize {
 				maxsize = len(c)
@@ -213,20 +216,33 @@ func compareCert(cert1, cert2 *x509.Certificate) bool {
 	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
 }
 
-func printChain(chain [][]*x509.Certificate) {
-	for _, chainval := range chain {
+func (el entrylist) printChain(chain [][]*x509.Certificate) {
+	for i, chainval := range chain {
+		if i > 0 {
+			fmt.Println(strings.Repeat("=", 100))
+			fmt.Println()
+		}
 		for certidx, certval := range chainval {
-			//if certval != curentry.cert {
-			//cert := entry{certval, "Chain from: "  + curentry.source, nil, nil}
-			//cert := entry{certval, "Chain from: ", nil, nil}
-			fmt.Println("-  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  ")
+			cert := entry{
+				Cert:      certval,
+				Source:    "Chain from: System Roots ",
+				SourcePos: -1,
+			}
+
+			for _, e := range el {
+				if compareCert(e.Cert, certval) {
+					cert = e
+				}
+			}
+
+			if certidx > 0 {
+				fmt.Println(strings.Repeat("- ", 50))
+			}
 			printEntry(cert, certidx)
 			//}
 		}
 	}
-	fmt.Println("------------------------------------------------------------------------------------------------------------")
-	fmt.Println()
-}*/
+}
 
 func (el entrylist) printCerts() {
 	fmt.Println()
@@ -238,12 +254,15 @@ func (el entrylist) printCerts() {
 		}
 
 		printEntry(curentry, 0)
-		for _, chainval := range curentry.chain {
+		for _, chainval := range curentry.Chain {
 			for certidx, certval := range chainval {
-				if certval != curentry.cert {
-					cert := entry{certval, "Chain from: " + curentry.Source, nil, nil}
+				if certval != curentry.Cert {
+					e := entry{
+						Cert:   certval,
+						Source: "Chain from: " + curentry.Source,
+					}
 					fmt.Println(strings.Repeat("- ", 50))
-					printEntry(cert, certidx)
+					printEntry(e, certidx)
 				}
 			}
 		}
@@ -252,33 +271,37 @@ func (el entrylist) printCerts() {
 
 func printEntry(e entry, tabcount int) {
 	tab := strings.Repeat(" ", tabcount*4)
-	printName(e.cert.Subject)
-	fmt.Println(tab, "Subject       :", printName(e.cert.Subject))
-	fmt.Println(tab, "Version       :", e.cert.Version)
-	fmt.Println(tab, "Serial Number :", encodeHex(e.cert.SerialNumber.Bytes()))
-	fmt.Println(tab, "Sign Algo     :", e.cert.SignatureAlgorithm)
-	fmt.Println(tab, "Issuer        :", printName(e.cert.Issuer))
+	printName(e.Cert.Subject)
+	fmt.Println(tab, "Subject       :", printName(e.Cert.Subject))
+	fmt.Println(tab, "Version       :", e.Cert.Version)
+	fmt.Println(tab, "Serial Number :", encodeHex(e.Cert.SerialNumber.Bytes()))
+	fmt.Println(tab, "Sign Algo     :", e.Cert.SignatureAlgorithm)
+	fmt.Println(tab, "Issuer        :", printName(e.Cert.Issuer))
 	fmt.Println(tab, "Validity:")
-	fmt.Println(tab, "  Not Before  :", e.cert.NotBefore)
-	fmt.Println(tab, "  Not After   :", e.cert.NotAfter)
-	fmt.Println(tab, "Key Usage     :", printKeyUsage(e.cert.KeyUsage))
-	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.cert))
+	fmt.Println(tab, "  Not Before  :", e.Cert.NotBefore)
+	fmt.Println(tab, "  Not After   :", e.Cert.NotAfter)
+	fmt.Println(tab, "Key Usage     :", printKeyUsage(e.Cert.KeyUsage))
+	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.Cert))
 
-	if temp := printAltNames(e.cert); temp != "" {
+	if temp := printAltNames(e.Cert); temp != "" {
 		fmt.Println(tab, "Alt Names     :", temp)
 	}
-	fmt.Println(tab, "CA            :", e.cert.IsCA)
+	fmt.Println(tab, "CA            :", e.Cert.IsCA)
 
-	if e.verified == nil {
-		if selfsigned := isSelfSignedRoot(e.cert); selfsigned {
-			fmt.Println(tab, "Self signed   :", isSelfSignedRoot(e.cert))
+	if e.Verified == nil {
+		if selfsigned := isSelfSignedRoot(e.Cert); selfsigned {
+			fmt.Println(tab, "Verified      : true, self signed")
 		} else {
 			fmt.Println(tab, "Verified      : true")
 		}
 	} else {
-		fmt.Println(tab, "Verified      : false,", e.verified)
+		fmt.Println(tab, "Verified      : false,", e.Verified)
 	}
-	fmt.Println(tab, "Source        :", e.Source)
+	if e.SourcePos < 0 {
+		fmt.Println(tab, "Source        :", e.Source)
+	} else {
+		fmt.Println(tab, "Source        :", e.Source+" | Certificate: "+strconv.Itoa(e.SourcePos))
+	}
 	fmt.Println()
 }
 

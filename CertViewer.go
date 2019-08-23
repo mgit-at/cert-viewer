@@ -5,10 +5,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 
@@ -20,17 +22,17 @@ import (
 /*
 upcoming features:
 [ ] multiple files
-[x] split source into 2 / source and sourcepos
+[X] split source into 2 / source and sourcepos
 [ ] json output
-[ ] remove subchain output
+[X] remove subchain output
 */
 
 type entry struct {
-	Cert      *x509.Certificate     `json:"certificate"`
-	Source    string                `json:"source"`
-	SourcePos int                   `json:"sourcepos"`
-	Chain     [][]*x509.Certificate `json:"chain"`
-	Verified  error                 `json:"Verified"`
+	Cert      *x509.Certificate `json:"certificate"`
+	Source    string            `json:"source"`
+	SourcePos int               `json:"sourceposition"`
+	Verified  error             `json:"verify error"`
+	chain     [][]*x509.Certificate
 }
 
 type entrylist []entry
@@ -45,18 +47,28 @@ func run() error {
 	var (
 		name       = kingpin.Arg("name", "filename").Required().String()
 		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
+		usefolder  = kingpin.Flag("usefolder", "Should the directory be used isntead of a filename").Default("false").Bool()
 	)
 	kingpin.Version("0.0.1")
 	kingpin.Parse()
 
-	certPEM, err := ioutil.ReadFile(*name)
-	if err != nil {
-		return errors.Wrapf(err, "failed to read file %q", *name)
-	}
+	var blocklist []*pem.Block
+	if *usefolder {
+		var err error
+		blocklist, err = runfolder(*name)
+		if err != nil {
+			return err
+		}
+	} else {
+		certPEM, err := ioutil.ReadFile(*name)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read file %q", *name)
+		}
 
-	blocklist, err := decode(certPEM)
-	if err != nil {
-		return errors.Wrap(err, "failed to decode PEM")
+		blocklist, err = decode(certPEM)
+		if err != nil {
+			return errors.Wrap(err, "failed to decode PEM")
+		}
 	}
 
 	certlist, err := parse(blocklist, *name)
@@ -68,19 +80,50 @@ func run() error {
 		return errors.Wrap(err, "failed to verify")
 	}
 
-	//certlist.printCerts()
-
-	//data, err := json.MarshalIndent(certlist, "", "  ")
-	//fmt.Fprintf(os.Stdout, "%s\n", data)
-
 	chain, err := certlist.mergeChain()
 	if err != nil {
 		return errors.Wrap(err, "failed to parse")
 	}
 
-	certlist.printChain(chain)
+	newlist, err := certlist.printChain(chain)
+	if err != nil {
+		return errors.Wrap(err, "failed to print")
+	}
+
+	data, err := json.MarshalIndent(newlist, "", "  ")
+	if err != nil {
+		return errors.Wrap(err, "failed to convert to json")
+	}
+	ioutil.WriteFile("/home/daniel/Schreibtisch/testfile.json", data, os.FileMode(0777))
 
 	return nil
+}
+
+func runfolder(name string) ([]*pem.Block, error) {
+	files, err := ioutil.ReadDir(name)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to read directory %q", name)
+	}
+	var filelist []os.FileInfo
+	for _, f := range files {
+		if strings.Contains(f.Name(), ".crt") || strings.Contains(f.Name(), ".cert") || strings.Contains(f.Name(), ".pem") {
+			filelist = append(filelist, f)
+		}
+	}
+	var blocklist []*pem.Block
+	for _, f := range filelist {
+		certpem, err := ioutil.ReadFile(name + "/" + f.Name())
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to read file %q", f.Name())
+		}
+		nblocklist, err := decode(certpem)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to decode PEM")
+		}
+
+		blocklist = append(blocklist, nblocklist...)
+	}
+	return blocklist, nil
 }
 
 func decode(certPEM []byte) ([]*pem.Block, error) {
@@ -133,10 +176,10 @@ func (el entrylist) verifyAllCerts(usesysroot bool) error {
 	for wip && notdone {
 		wip, notdone = false, false
 		for idx, curentry := range el {
-			if curentry.Chain != nil {
+			if curentry.chain != nil {
 				continue
 			}
-			curentry.Chain, curentry.Verified = verify(curentry, pool, roots)
+			curentry.chain, curentry.Verified = verify(curentry, pool, roots)
 			switch errors.Cause(curentry.Verified).(type) {
 			case x509.SystemRootsError:
 				return curentry.Verified
@@ -167,18 +210,12 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 	return chain, nil
 }
 
-func isSelfSignedRoot(cert *x509.Certificate) bool {
-	if cert.AuthorityKeyId != nil {
-		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
-	}
-	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
-}
-
 func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
 	var comchain [][]*x509.Certificate
 	maxsize := 0
+	//}
 	for _, v := range el {
-		for _, c := range v.Chain {
+		for _, c := range v.chain {
 			comchain = append(comchain, c)
 			if len(c) > maxsize {
 				maxsize = len(c)
@@ -198,6 +235,17 @@ func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
 	return redchain, nil
 }
 
+func isSelfSignedRoot(cert *x509.Certificate) bool {
+	if cert.AuthorityKeyId != nil {
+		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
+	}
+	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
+}
+
+func compareCert(cert1, cert2 *x509.Certificate) bool {
+	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
+}
+
 func compareChain(chain1, chain2 []*x509.Certificate) bool {
 	if len(chain1) < len(chain2) {
 		chain1, chain2 = chain2, chain1
@@ -212,18 +260,15 @@ func compareChain(chain1, chain2 []*x509.Certificate) bool {
 	return true
 }
 
-func compareCert(cert1, cert2 *x509.Certificate) bool {
-	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
-}
-
-func (el entrylist) printChain(chain [][]*x509.Certificate) {
+func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
+	var printedlist entrylist
 	for i, chainval := range chain {
 		if i > 0 {
 			fmt.Println(strings.Repeat("=", 100))
 			fmt.Println()
 		}
 		for certidx, certval := range chainval {
-			cert := entry{
+			certentry := entry{
 				Cert:      certval,
 				Source:    "Chain from: System Roots ",
 				SourcePos: -1,
@@ -231,42 +276,19 @@ func (el entrylist) printChain(chain [][]*x509.Certificate) {
 
 			for _, e := range el {
 				if compareCert(e.Cert, certval) {
-					cert = e
+					certentry = e
 				}
 			}
 
 			if certidx > 0 {
 				fmt.Println(strings.Repeat("- ", 50))
 			}
-			printEntry(cert, certidx)
-			//}
+			printEntry(certentry, certidx)
+			printedlist = append(printedlist, certentry)
 		}
 	}
-}
+	return printedlist, nil
 
-func (el entrylist) printCerts() {
-	fmt.Println()
-	for i, curentry := range el {
-
-		if i > 0 {
-			fmt.Println(strings.Repeat("=", 100))
-			fmt.Println()
-		}
-
-		printEntry(curentry, 0)
-		for _, chainval := range curentry.Chain {
-			for certidx, certval := range chainval {
-				if certval != curentry.Cert {
-					e := entry{
-						Cert:   certval,
-						Source: "Chain from: " + curentry.Source,
-					}
-					fmt.Println(strings.Repeat("- ", 50))
-					printEntry(e, certidx)
-				}
-			}
-		}
-	}
 }
 
 func printEntry(e entry, tabcount int) {

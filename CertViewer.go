@@ -24,7 +24,7 @@ upcoming features:
 [X] multiple files
 [X] split source into 2 / source and sourcepos
 [ ] json output
-[] remove subchain output
+[X] remove subchain output
 */
 
 type entry struct {
@@ -53,10 +53,10 @@ func run() error {
 	kingpin.Version("0.0.1")
 	kingpin.Parse()
 
-	var blocklist []*pem.Block
+	var certlist entrylist
 	if *usefolder {
 		var err error
-		blocklist, err = runfolder(*name)
+		certlist, err = runfolder(*name)
 		if err != nil {
 			return err
 		}
@@ -66,15 +66,14 @@ func run() error {
 			return errors.Wrapf(err, "failed to read file %q", *name)
 		}
 
-		blocklist, err = decode(certPEM)
+		blocklist, err := decode(certPEM)
 		if err != nil {
 			return errors.Wrap(err, "failed to decode PEM")
 		}
-	}
-
-	certlist, err := parse(blocklist, *name)
-	if err != nil {
-		return errors.Wrap(err, "failed to parse")
+		certlist, err = parse(blocklist, *name)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse")
+		}
 	}
 
 	if err := certlist.verifyAllCerts(*usesysroot); err != nil {
@@ -101,7 +100,7 @@ func run() error {
 	return nil
 }
 
-func runfolder(name string) ([]*pem.Block, error) {
+func runfolder(name string) (entrylist, error) {
 	files, err := ioutil.ReadDir(name)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to read directory %q", name)
@@ -112,9 +111,11 @@ func runfolder(name string) ([]*pem.Block, error) {
 			filelist = append(filelist, f)
 		}
 	}
-	var blocklist []*pem.Block
+	var el entrylist
 	for _, f := range filelist {
-		certpem, err := ioutil.ReadFile(name + "/" + f.Name())
+		fname := name + "/" + f.Name()
+
+		certpem, err := ioutil.ReadFile(fname)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to read file %q", f.Name())
 		}
@@ -123,9 +124,14 @@ func runfolder(name string) ([]*pem.Block, error) {
 			return nil, errors.Wrap(err, "failed to decode PEM")
 		}
 
-		blocklist = append(blocklist, nblocklist...)
+		certlist, err := parse(nblocklist, fname)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse")
+		}
+
+		el = append(el, certlist...)
 	}
-	return blocklist, nil
+	return el, nil
 }
 
 func decode(certPEM []byte) ([]*pem.Block, error) {
@@ -277,7 +283,7 @@ func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
 		for certidx, certval := range chainval {
 			certentry := entry{
 				Cert:      certval,
-				Source:    "Chain from: System Roots ",
+				Source:    "Certificate from System Roots ",
 				SourcePos: -1,
 			}
 

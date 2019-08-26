@@ -21,7 +21,7 @@ import (
 
 /*
 upcoming features:
-[ ] multiple files
+[X] multiple files
 [X] split source into 2 / source and sourcepos
 [ ] json output
 [X] remove subchain output
@@ -33,6 +33,7 @@ type entry struct {
 	SourcePos int               `json:"sourceposition"`
 	Verified  error             `json:"verify error"`
 	chain     [][]*x509.Certificate
+	printed   bool
 }
 
 type entrylist []entry
@@ -274,8 +275,9 @@ func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
 				SourcePos: -1,
 			}
 
-			for _, e := range el {
+			for i, e := range el {
 				if compareCert(e.Cert, certval) {
+					el[i].printed = true
 					certentry = e
 				}
 			}
@@ -285,6 +287,17 @@ func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
 			}
 			printEntry(certentry, certidx)
 			printedlist = append(printedlist, certentry)
+		}
+	}
+
+	for _, e := range el {
+		if !e.printed {
+			if len(printedlist) > 0 {
+				fmt.Println(strings.Repeat("=", 100))
+				fmt.Println()
+			}
+			printEntry(e, 0)
+			printedlist = append(printedlist, e)
 		}
 	}
 	return printedlist, nil

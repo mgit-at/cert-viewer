@@ -24,7 +24,7 @@ upcoming features:
 [X] multiple files
 [X] split source into 2 / source and sourcepos
 [ ] json output
-[X] remove subchain output
+[] remove subchain output
 */
 
 type entry struct {
@@ -86,6 +86,7 @@ func run() error {
 		return errors.Wrap(err, "failed to parse")
 	}
 
+	//return errors.Wrap(err, "failed to parse")
 	newlist, err := certlist.printChain(chain)
 	if err != nil {
 		return errors.Wrap(err, "failed to print")
@@ -212,24 +213,28 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 }
 
 func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
-	var comchain [][]*x509.Certificate
-	maxsize := 0
-	//}
+	type chainstruct struct {
+		chain    []*x509.Certificate
+		subchain bool
+	}
+	var comchain []chainstruct
 	for _, v := range el {
 		for _, c := range v.chain {
-			comchain = append(comchain, c)
-			if len(c) > maxsize {
-				maxsize = len(c)
-			}
+			comchain = append(comchain, chainstruct{chain: c, subchain: false})
 		}
 	}
 
 	var redchain [][]*x509.Certificate
-	redchain = append(redchain, comchain[0])
 	if len(comchain) > 1 {
-		for i, v := range comchain[1:] {
-			if !compareChain(comchain[i], v) {
-				redchain = append(redchain, v)
+		for _, v1 := range comchain {
+			for _, v2 := range comchain {
+				if isSubchain(v2.chain, v1.chain) {
+					v1.subchain = true
+					break
+				}
+			}
+			if !v1.subchain {
+				redchain = append(redchain, v1.chain)
 			}
 		}
 	}
@@ -247,13 +252,14 @@ func compareCert(cert1, cert2 *x509.Certificate) bool {
 	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
 }
 
-func compareChain(chain1, chain2 []*x509.Certificate) bool {
-	if len(chain1) < len(chain2) {
-		chain1, chain2 = chain2, chain1
+func isSubchain(mainchain, subchain []*x509.Certificate) bool {
+	if len(mainchain) <= len(subchain) {
+		return false
 	}
-	dif := len(chain1) - len(chain2)
-	for i := len(chain1) - 1; i > 0; i-- {
-		if chain1[i] != chain2[i-dif] {
+	dif := len(mainchain) - len(subchain)
+
+	for i := dif; i < len(mainchain); i++ {
+		if !compareCert(mainchain[i], subchain[i-dif]) {
 			return false
 		}
 	}

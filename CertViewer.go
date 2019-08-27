@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/asn1"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -11,8 +10,10 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -20,23 +21,43 @@ import (
 )
 
 /*
-upcoming features:
-[X] multiple files
-[X] split source into 2 / source and sourcepos
-[ ] json output
-[X] remove subchain output
+[X]json flag for commandline
+[X]multiple args instead of flag
+[X]automatic detection of directory
+[X]path/filepath/.walk
+[ ]Source as list
 */
 
 type entry struct {
 	Cert      *x509.Certificate `json:"certificate"`
 	Source    string            `json:"source"`
-	SourcePos int               `json:"sourceposition"`
 	Verified  error             `json:"verify error"`
+	sourcePos int
 	chain     [][]*x509.Certificate
 	printed   bool
 }
 
 type entrylist []entry
+
+type validity struct {
+	NotBefore time.Time
+	NotAfter  time.Time
+}
+
+type jsonentry struct {
+	Subject      pkix.Name `json:"subject"`
+	Version      int       `json:"version"`
+	Serialnumber string    `json:"serialnumber"`
+	SignAlgo     string    `json:"signature algorithm"`
+	Issuer       pkix.Name `json:"issuer"`
+	Validity     validity  `json:"validity"`
+	KeyUsage     []string  `json:"key usage"`
+	ExtKeyUsage  []string  `json:"extended key usage"`
+	AltNames     []string  `json:"alternative names"`
+	CA           bool      `json:"ca"`
+	Verified     string    `json:"verified"`
+	Source       string    `json:"source"`
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -46,33 +67,39 @@ func main() {
 
 func run() error {
 	var (
-		name       = kingpin.Arg("name", "filename").Required().String()
+		names      = kingpin.Arg("name", "filename").Required().Strings()
 		usesysroot = kingpin.Flag("usesysroot", "Should Sysroot be used").Default("true").Bool()
-		usefolder  = kingpin.Flag("usefolder", "Should the directory be used isntead of a filename").Default("false").Bool()
+		jsonflag   = kingpin.Flag("json", "Should json syntax be used").Bool()
 	)
 	kingpin.Version("0.0.1")
 	kingpin.Parse()
 
 	var certlist entrylist
-	if *usefolder {
-		var err error
-		certlist, err = runfolder(*name)
-		if err != nil {
-			return err
-		}
-	} else {
-		certPEM, err := ioutil.ReadFile(*name)
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", *name)
-		}
+	for _, name := range *names {
+		err := filepath.Walk(name, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return errors.Wrapf(err, "failed to read file %q", path)
+			}
+			if strings.Contains(info.Name(), ".crt") || strings.Contains(info.Name(), ".cert") || strings.Contains(info.Name(), ".pem") {
+				certpem, err := ioutil.ReadFile(path)
+				if err != nil {
+					return errors.Wrapf(err, "failed to read file %q", path)
+				}
+				nblocklist, err := decode(certpem)
+				if err != nil {
+					return errors.Wrap(err, "failed to decode PEM")
+				}
 
-		blocklist, err := decode(certPEM)
+				list, err := parse(nblocklist, path)
+				if err != nil {
+					return errors.Wrap(err, "failed to parse")
+				}
+				certlist = append(certlist, list...)
+			}
+			return nil
+		})
 		if err != nil {
-			return errors.Wrap(err, "failed to decode PEM")
-		}
-		certlist, err = parse(blocklist, *name)
-		if err != nil {
-			return errors.Wrap(err, "failed to parse")
+			return errors.Wrap(err, "failed to file walk")
 		}
 	}
 
@@ -85,53 +112,11 @@ func run() error {
 		return errors.Wrap(err, "failed to parse")
 	}
 
-	//return errors.Wrap(err, "failed to parse")
-	newlist, err := certlist.printChain(chain)
-	if err != nil {
+	if err = certlist.printChain(chain, *jsonflag); err != nil {
 		return errors.Wrap(err, "failed to print")
 	}
 
-	data, err := json.MarshalIndent(newlist, "", "  ")
-	if err != nil {
-		return errors.Wrap(err, "failed to convert to json")
-	}
-	ioutil.WriteFile("/home/daniel/Schreibtisch/testfile.json", data, os.FileMode(0777))
-
 	return nil
-}
-
-func runfolder(name string) (entrylist, error) {
-	files, err := ioutil.ReadDir(name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to read directory %q", name)
-	}
-	var filelist []os.FileInfo
-	for _, f := range files {
-		if strings.Contains(f.Name(), ".crt") || strings.Contains(f.Name(), ".cert") || strings.Contains(f.Name(), ".pem") {
-			filelist = append(filelist, f)
-		}
-	}
-	var el entrylist
-	for _, f := range filelist {
-		fname := name + "/" + f.Name()
-
-		certpem, err := ioutil.ReadFile(fname)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to read file %q", f.Name())
-		}
-		nblocklist, err := decode(certpem)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to decode PEM")
-		}
-
-		certlist, err := parse(nblocklist, fname)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse")
-		}
-
-		el = append(el, certlist...)
-	}
-	return el, nil
 }
 
 func decode(certPEM []byte) ([]*pem.Block, error) {
@@ -163,7 +148,7 @@ func parse(blocklist []*pem.Block, name string) (entrylist, error) {
 		e := entry{
 			Cert:      c,
 			Source:    name,
-			SourcePos: i,
+			sourcePos: i,
 		}
 		el = append(el, e)
 	}
@@ -230,21 +215,21 @@ func (el entrylist) mergeChain() ([][]*x509.Certificate, error) {
 		}
 	}
 
-	var redchain [][]*x509.Certificate
-	if len(comchain) > 1 {
-		for _, v1 := range comchain {
-			for _, v2 := range comchain {
+	var reducedchain [][]*x509.Certificate
+	for i1, v1 := range comchain {
+		for i2, v2 := range comchain {
+			if i1 != i2 && !v2.subchain {
 				if isSubchain(v2.chain, v1.chain) {
 					v1.subchain = true
 					break
 				}
 			}
-			if !v1.subchain {
-				redchain = append(redchain, v1.chain)
-			}
+		}
+		if !v1.subchain {
+			reducedchain = append(reducedchain, v1.chain)
 		}
 	}
-	return redchain, nil
+	return reducedchain, nil
 }
 
 func isSelfSignedRoot(cert *x509.Certificate) bool {
@@ -262,10 +247,9 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	if len(mainchain) <= len(subchain) {
 		return false
 	}
-	dif := len(mainchain) - len(subchain)
 
-	for i := dif; i < len(mainchain); i++ {
-		if !compareCert(mainchain[i], subchain[i-dif]) {
+	for i := 0; i < len(subchain); i++ {
+		if !compareCert(mainchain[len(mainchain)-i-1], subchain[len(subchain)-i-1]) {
 			return false
 		}
 	}
@@ -273,18 +257,24 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	return true
 }
 
-func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
-	var printedlist entrylist
+func (el entrylist) printChain(chain [][]*x509.Certificate, jsonflag bool) error {
+	notfirstprint := true
+
 	for i, chainval := range chain {
-		if i > 0 {
-			fmt.Println(strings.Repeat("=", 100))
-			fmt.Println()
+		if i > 0 && !jsonflag {
+			if !jsonflag {
+				fmt.Println(strings.Repeat("=", 100))
+				fmt.Println()
+				notfirstprint = false
+			} else {
+				fmt.Print(",")
+			}
 		}
 		for certidx, certval := range chainval {
 			certentry := entry{
 				Cert:      certval,
 				Source:    "Certificate from System Roots ",
-				SourcePos: -1,
+				sourcePos: -1,
 			}
 
 			for i, e := range el {
@@ -295,61 +285,112 @@ func (el entrylist) printChain(chain [][]*x509.Certificate) (entrylist, error) {
 			}
 
 			if certidx > 0 {
-				fmt.Println(strings.Repeat("- ", 50))
+				if !jsonflag {
+					fmt.Println(strings.Repeat("- ", 50))
+				} else {
+					fmt.Print(",")
+				}
 			}
-			printEntry(certentry, certidx)
-			printedlist = append(printedlist, certentry)
+			if err := printSingle(certentry, certidx, jsonflag); err != nil {
+				return err
+			}
 		}
 	}
 
 	for _, e := range el {
 		if !e.printed {
-			if len(printedlist) > 0 {
-				fmt.Println(strings.Repeat("=", 100))
-				fmt.Println()
+			if notfirstprint && !jsonflag {
+				if jsonflag {
+					fmt.Println(strings.Repeat("=", 100))
+					fmt.Println()
+				} else {
+					fmt.Print(",")
+				}
 			}
-			printEntry(e, 0)
-			printedlist = append(printedlist, e)
+
+			if err := printSingle(e, 0, jsonflag); err != nil {
+				return err
+			}
 		}
 	}
-	return printedlist, nil
+	return nil
 
 }
 
-func printEntry(e entry, tabcount int) {
-	tab := strings.Repeat(" ", tabcount*4)
-	printName(e.Cert.Subject)
-	fmt.Println(tab, "Subject       :", printName(e.Cert.Subject))
-	fmt.Println(tab, "Version       :", e.Cert.Version)
-	fmt.Println(tab, "Serial Number :", encodeHex(e.Cert.SerialNumber.Bytes()))
-	fmt.Println(tab, "Sign Algo     :", e.Cert.SignatureAlgorithm)
-	fmt.Println(tab, "Issuer        :", printName(e.Cert.Issuer))
-	fmt.Println(tab, "Validity:")
-	fmt.Println(tab, "  Not Before  :", e.Cert.NotBefore)
-	fmt.Println(tab, "  Not After   :", e.Cert.NotAfter)
-	fmt.Println(tab, "Key Usage     :", printKeyUsage(e.Cert.KeyUsage))
-	fmt.Println(tab, "Ext Key Usage :", printExtKeyUsage(e.Cert))
-
-	if temp := printAltNames(e.Cert); temp != "" {
-		fmt.Println(tab, "Alt Names     :", temp)
+func printSingle(e entry, tabcount int, jsonflag bool) error {
+	jsn, err := initJSON(e)
+	if err != nil {
+		return err
 	}
-	fmt.Println(tab, "CA            :", e.Cert.IsCA)
+	if !jsonflag {
+		printEntry(jsn, tabcount)
+	} else {
+		data, err := json.MarshalIndent(jsn, "", "  ")
+		if err != nil {
+			return errors.Wrap(err, "failed to convert to json")
+		}
+		fmt.Println(string(data))
+
+	}
+
+	return nil
+}
+func initJSON(e entry) (jsonentry, error) {
+	jsn := jsonentry{
+		Subject:  e.Cert.Subject,
+		Version:  e.Cert.Version,
+		SignAlgo: e.Cert.SignatureAlgorithm.String(),
+		Issuer:   e.Cert.Issuer,
+		Validity: validity{
+			NotBefore: e.Cert.NotBefore,
+			NotAfter:  e.Cert.NotAfter},
+		CA: e.Cert.IsCA,
+	}
+	jsn.Serialnumber = encodeHex(e.Cert.SerialNumber.Bytes())
+
+	jsn.printKeyUsage(e.Cert.KeyUsage)
+	jsn.printExtKeyUsage(e.Cert)
+	jsn.printAltNames(e.Cert)
 
 	if e.Verified == nil {
 		if selfsigned := isSelfSignedRoot(e.Cert); selfsigned {
-			fmt.Println(tab, "Verified      : true, self signed")
+			jsn.Verified = "true, self signed"
 		} else {
-			fmt.Println(tab, "Verified      : true")
+			jsn.Verified = "true"
 		}
 	} else {
-		fmt.Println(tab, "Verified      : false,", e.Verified)
+		jsn.Verified = "false," + e.Verified.Error()
 	}
-	if e.SourcePos < 0 {
-		fmt.Println(tab, "Source        :", e.Source)
-	} else {
-		fmt.Println(tab, "Source        :", e.Source+" | Certificate: "+strconv.Itoa(e.SourcePos))
+
+	jsn.Source = e.Source
+	if e.sourcePos >= 0 {
+		jsn.Source += " | Certificate: " + strconv.Itoa(e.sourcePos)
 	}
+
+	return jsn, nil
+}
+
+func printEntry(jsn jsonentry, tabcount int) error {
+
+	tab := strings.Repeat(" ", tabcount*4)
+
+	fmt.Println(tab, "Subject       :", printName(jsn.Subject))
+	fmt.Println(tab, "Version       :", jsn.Version)
+	fmt.Println(tab, "Serial Number :", jsn.Serialnumber)
+	fmt.Println(tab, "Sign Algo     :", jsn.SignAlgo)
+	fmt.Println(tab, "Issuer        :", printName(jsn.Issuer))
+	fmt.Println(tab, "Validity:")
+	fmt.Println(tab, "  Not Before  :", jsn.Validity.NotBefore)
+	fmt.Println(tab, "  Not After   :", jsn.Validity.NotAfter)
+	fmt.Println(tab, "Key Usage     :", strings.Join(jsn.ExtKeyUsage, ", "))
+	fmt.Println(tab, "Ext Key Usage :", strings.Join(jsn.KeyUsage, ", "))
+	fmt.Println(tab, "Alt Names     :", strings.Join(jsn.AltNames, ", "))
+	fmt.Println(tab, "CA            :", jsn.CA)
+	fmt.Println(tab, "Verified      :", jsn.Verified)
+	fmt.Println(tab, "Source        :", jsn.Source)
 	fmt.Println()
+
+	return nil
 }
 
 func printName(val pkix.Name) string {
@@ -381,98 +422,87 @@ func printName(val pkix.Name) string {
 	return strings.Join(names, ", ")
 }
 
-func printAltNames(cert *x509.Certificate) string {
-	var names []string
+func (je *jsonentry) printAltNames(cert *x509.Certificate) {
 	for _, v := range cert.DNSNames {
-		names = append(names, "DNS:"+v)
+		je.AltNames = append(je.AltNames, "DNS:"+v)
 	}
 	for _, v := range cert.EmailAddresses {
-		names = append(names, "EMAIL:"+v)
+		je.AltNames = append(je.AltNames, "EMAIL:"+v)
 	}
 	for _, v := range cert.IPAddresses {
-		names = append(names, "IP:"+string(v))
+		je.AltNames = append(je.AltNames, "IP:"+string(v))
 	}
 	for _, v := range cert.URIs {
-		names = append(names, "URI:"+v.RawQuery)
+		je.AltNames = append(je.AltNames, "URI:"+v.RawQuery)
 	}
-	return strings.Join(names, ", ")
 }
 
-func printKeyUsage(val x509.KeyUsage) string {
-	var names []string
+func (je *jsonentry) printKeyUsage(val x509.KeyUsage) {
 	if val&x509.KeyUsageDigitalSignature > 0 {
-		names = append(names, "Digital Signiture")
+		je.KeyUsage = append(je.KeyUsage, "Digital Signiture")
 	}
 	if val&x509.KeyUsageContentCommitment > 0 {
-		names = append(names, "Content Commitment")
+		je.KeyUsage = append(je.KeyUsage, "Content Commitment")
 	}
 	if val&x509.KeyUsageKeyEncipherment > 0 {
-		names = append(names, "Key Encipherment")
+		je.KeyUsage = append(je.KeyUsage, "Key Encipherment")
 	}
 	if val&x509.KeyUsageDataEncipherment > 0 {
-		names = append(names, "Data Encipherment")
+		je.KeyUsage = append(je.KeyUsage, "Data Encipherment")
 	}
 	if val&x509.KeyUsageKeyAgreement > 0 {
-		names = append(names, "Key Agreement")
+		je.KeyUsage = append(je.KeyUsage, "Key Agreement")
 	}
 	if val&x509.KeyUsageCertSign > 0 {
-		names = append(names, "Cert Sign")
+		je.KeyUsage = append(je.KeyUsage, "Cert Sign")
 	}
 	if val&x509.KeyUsageCRLSign > 0 {
-		names = append(names, "CRL Sign")
+		je.KeyUsage = append(je.KeyUsage, "CRL Sign")
 	}
 	if val&x509.KeyUsageEncipherOnly > 0 {
-		names = append(names, "Enciper Only")
+		je.KeyUsage = append(je.KeyUsage, "Enciper Only")
 	}
 	if val&x509.KeyUsageDecipherOnly > 0 {
-		names = append(names, "Decipher Only")
+		je.KeyUsage = append(je.KeyUsage, "Decipher Only")
 	}
-	return strings.Join(names, ", ")
 }
 
-func printExtKeyUsage(cert *x509.Certificate) string {
-	var names []string
+func (je *jsonentry) printExtKeyUsage(cert *x509.Certificate) {
 	for _, v := range cert.ExtKeyUsage {
 		switch v {
 		case x509.ExtKeyUsageAny:
-			names = append(names, "Any")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Any")
 		case x509.ExtKeyUsageServerAuth:
-			names = append(names, "Server Authentication")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Server Authentication")
 		case x509.ExtKeyUsageClientAuth:
-			names = append(names, "Client Authentication")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Client Authentication")
 		case x509.ExtKeyUsageCodeSigning:
-			names = append(names, "Code Signing")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Code Signing")
 		case x509.ExtKeyUsageEmailProtection:
-			names = append(names, "Email Protection")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Email Protection")
 		case x509.ExtKeyUsageIPSECEndSystem:
-			names = append(names, "IPSEC End System")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC End System")
 		case x509.ExtKeyUsageIPSECTunnel:
-			names = append(names, "IPSEC Tunnel")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC Tunnel")
 		case x509.ExtKeyUsageIPSECUser:
-			names = append(names, "IPSEC User")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC User")
 		case x509.ExtKeyUsageTimeStamping:
-			names = append(names, "Time Stamping")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Time Stamping")
 		case x509.ExtKeyUsageOCSPSigning:
-			names = append(names, "OCSP Signing")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "OCSP Signing")
 		case x509.ExtKeyUsageMicrosoftServerGatedCrypto:
-			names = append(names, "Microsoft Server Gated Crypto")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Server Gated Crypto")
 		case x509.ExtKeyUsageNetscapeServerGatedCrypto:
-			names = append(names, "Netscape Server Gated Crypto")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Netscape Server Gated Crypto")
 		case x509.ExtKeyUsageMicrosoftCommercialCodeSigning:
-			names = append(names, "Microsoft Commercial Code Signing")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Commercial Code Signing")
 		case x509.ExtKeyUsageMicrosoftKernelCodeSigning:
-			names = append(names, "Microsoft Kernel Code Signing")
+			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Kernel Code Signing")
 		}
 	}
-	names = append(names, printUnknownExtKeyUsage(cert.UnknownExtKeyUsage))
-	return strings.Join(names, ", ")
-}
-func printUnknownExtKeyUsage(val []asn1.ObjectIdentifier) string {
-	var names []string
-	for _, v := range val {
-		names = append(names, v.String())
+	for _, v := range cert.UnknownExtKeyUsage {
+		je.ExtKeyUsage = append(je.ExtKeyUsage, v.String())
 	}
-	return strings.Join(names, ", ")
 }
 
 func encodeHex(val []byte) string {

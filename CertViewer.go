@@ -22,9 +22,9 @@ import (
 /*
 [X]json flag for commandline
 [X]multiple args instead of flag
-[ ]automatic detection of directory
-[ ]path/filepath/.walk
-[ ]Source as list
+[X]automatic detection of directory
+[X]path/filepath/.walk
+[X]Source as list
 */
 
 type entry struct {
@@ -268,17 +268,12 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 }
 
 func (el entrylist) printChain(chain [][]*x509.Certificate, jsonflag bool) error {
-	notfirstprint := true
+	var jsonlist []jsonentry
 
 	for i, chainval := range chain {
 		if i > 0 && !jsonflag {
-			if !jsonflag {
-				fmt.Println(strings.Repeat("=", 100))
-				fmt.Println()
-				notfirstprint = false
-			} else {
-				fmt.Print(",")
-			}
+			fmt.Println(strings.Repeat("=", 100))
+			fmt.Println()
 		}
 		for certidx, certval := range chainval {
 			certentry := entry{
@@ -293,56 +288,54 @@ func (el entrylist) printChain(chain [][]*x509.Certificate, jsonflag bool) error
 				}
 			}
 
-			if certidx > 0 {
-				if !jsonflag {
-					fmt.Println(strings.Repeat("- ", 50))
-				} else {
-					fmt.Print(",")
-				}
+			if certidx > 0 && !jsonflag {
+				fmt.Println(strings.Repeat("- ", 50))
 			}
-			if err := printSingle(certentry, certidx, jsonflag); err != nil {
+
+			jsn, err := printSingle(certentry, certidx, jsonflag)
+			if err != nil {
 				return err
 			}
+			jsonlist = append(jsonlist, jsn)
 		}
 	}
 
 	for _, e := range el {
 		if !e.printed {
-			if notfirstprint && !jsonflag {
-				if jsonflag {
-					fmt.Println(strings.Repeat("=", 100))
-					fmt.Println()
-				} else {
-					fmt.Print(",")
-				}
+			if len(jsonlist) > 0 && !jsonflag {
+				fmt.Println(strings.Repeat("=", 100))
+				fmt.Println()
 			}
 
-			if err := printSingle(e, 0, jsonflag); err != nil {
+			jsn, err := printSingle(e, 0, jsonflag)
+			if err != nil {
 				return err
 			}
+			jsonlist = append(jsonlist, jsn)
 		}
+	}
+
+	if jsonflag {
+		data, err := json.MarshalIndent(jsonlist, "", "  ")
+		if err != nil {
+			return errors.Wrap(err, "failed to convert to json")
+		}
+		fmt.Println(string(data))
 	}
 	return nil
 
 }
 
-func printSingle(e entry, tabcount int, jsonflag bool) error {
+func printSingle(e entry, tabcount int, jsonflag bool) (jsonentry, error) {
 	jsn, err := initJSON(e)
 	if err != nil {
-		return err
+		return jsn, err
 	}
 	if !jsonflag {
 		printEntry(jsn, tabcount)
-	} else {
-		data, err := json.MarshalIndent(jsn, "", "  ")
-		if err != nil {
-			return errors.Wrap(err, "failed to convert to json")
-		}
-		fmt.Println(string(data))
-
 	}
 
-	return nil
+	return jsn, nil
 }
 
 func initJSON(e entry) (jsonentry, error) {

@@ -16,25 +16,23 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 /*
 [X]json flag for commandline
 [X]multiple args instead of flag
-[X]automatic detection of directory
-[X]path/filepath/.walk
+[ ]automatic detection of directory
+[ ]path/filepath/.walk
 [ ]Source as list
 */
 
 type entry struct {
-	Cert      *x509.Certificate `json:"certificate"`
-	Source    string            `json:"source"`
-	Verified  error             `json:"verify error"`
-	sourcePos int
-	chain     [][]*x509.Certificate
-	printed   bool
+	Cert     *x509.Certificate `json:"certificate"`
+	Source   []source          `json:"source"`
+	Verified error             `json:"verify error"`
+	chain    [][]*x509.Certificate
+	printed  bool
 }
 
 type entrylist []entry
@@ -42,6 +40,11 @@ type entrylist []entry
 type validity struct {
 	NotBefore time.Time
 	NotAfter  time.Time
+}
+
+type source struct {
+	name     string
+	position int
 }
 
 type jsonentry struct {
@@ -56,7 +59,7 @@ type jsonentry struct {
 	AltNames     []string  `json:"alternative names"`
 	CA           bool      `json:"ca"`
 	Verified     string    `json:"verified"`
-	Source       string    `json:"source"`
+	Source       []source  `json:"source"`
 }
 
 func main() {
@@ -90,11 +93,9 @@ func run() error {
 					return errors.Wrap(err, "failed to decode PEM")
 				}
 
-				list, err := parse(nblocklist, path)
-				if err != nil {
+				if err := certlist.parse(nblocklist, path); err != nil {
 					return errors.Wrap(err, "failed to parse")
 				}
-				certlist = append(certlist, list...)
 			}
 			return nil
 		})
@@ -138,21 +139,30 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 	return blocklist, nil
 }
 
-func parse(blocklist []*pem.Block, name string) (entrylist, error) {
-	var el entrylist
+func (el *entrylist) parse(blocklist []*pem.Block, filename string) error {
 	for i, block := range blocklist {
 		c, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to parse PEM block")
+			return errors.Wrapf(err, "failed to parse PEM block")
 		}
-		e := entry{
-			Cert:      c,
-			Source:    name,
-			sourcePos: i,
+
+		newcert := true
+		for idx, ent := range *el {
+			if compareCert(c, ent.Cert) {
+				(*el)[idx].Source = append((*el)[idx].Source, source{filename, i})
+				newcert = false
+			}
 		}
-		el = append(el, e)
+
+		if newcert {
+			e := entry{
+				Cert:   c,
+				Source: []source{source{filename, i}},
+			}
+			*el = append(*el, e)
+		}
 	}
-	return el, nil
+	return nil
 }
 
 func (el entrylist) verifyAllCerts(usesysroot bool) error {
@@ -272,9 +282,8 @@ func (el entrylist) printChain(chain [][]*x509.Certificate, jsonflag bool) error
 		}
 		for certidx, certval := range chainval {
 			certentry := entry{
-				Cert:      certval,
-				Source:    "Certificate from System Roots ",
-				sourcePos: -1,
+				Cert:   certval,
+				Source: []source{source{"Certificate from System Roots", -1}},
 			}
 
 			for i, e := range el {
@@ -335,6 +344,7 @@ func printSingle(e entry, tabcount int, jsonflag bool) error {
 
 	return nil
 }
+
 func initJSON(e entry) (jsonentry, error) {
 	jsn := jsonentry{
 		Subject:  e.Cert.Subject,
@@ -363,15 +373,10 @@ func initJSON(e entry) (jsonentry, error) {
 	}
 
 	jsn.Source = e.Source
-	if e.sourcePos >= 0 {
-		jsn.Source += " | Certificate: " + strconv.Itoa(e.sourcePos)
-	}
-
 	return jsn, nil
 }
 
 func printEntry(jsn jsonentry, tabcount int) error {
-
 	tab := strings.Repeat(" ", tabcount*4)
 
 	fmt.Println(tab, "Subject       :", printName(jsn.Subject))
@@ -387,7 +392,16 @@ func printEntry(jsn jsonentry, tabcount int) error {
 	fmt.Println(tab, "Alt Names     :", strings.Join(jsn.AltNames, ", "))
 	fmt.Println(tab, "CA            :", jsn.CA)
 	fmt.Println(tab, "Verified      :", jsn.Verified)
-	fmt.Println(tab, "Source        :", jsn.Source)
+
+	for _, src := range jsn.Source {
+		if src.position >= 0 {
+			sourcetext := src.name + " | Certificate: " + strconv.Itoa(src.position)
+			fmt.Println(tab, "Source        :", sourcetext)
+		} else {
+			fmt.Println(tab, "Source        : System Root")
+		}
+	}
+
 	fmt.Println()
 
 	return nil

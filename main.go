@@ -517,7 +517,7 @@ func printEntry(jsn jsonEntry) {
 	fmt.Println(tab, "Ext Key Usage    :", strings.Join(jsn.ExtKeyUsage, ", "))
 	fmt.Println(tab, "Alt Names        :", strings.Join(jsn.AltNames, ", "))
 	fmt.Println(tab, "Subject Key ID   :", jsn.SubjectKeyID)
-	fmt.Println(tab, "Authority Key IprintInfoD :", jsn.AuthorityKeyID)
+	fmt.Println(tab, "Authority Key ID :", jsn.AuthorityKeyID)
 	fmt.Println(tab, "CA               :", jsn.CA)
 	fmt.Println(tab, "Verified         :", formatVerified(jsn.Verified))
 	printSources(jsn.Source, tab)

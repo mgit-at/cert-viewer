@@ -1,3 +1,16 @@
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -11,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,8 +45,8 @@ type entryList []entry
 type jsonList []jsonEntry
 
 type validity struct {
-	NotBefore time.Time
-	NotAfter  time.Time
+	NotBefore time.Time `json:"not_before"`
+	NotAfter  time.Time `json:"not_after"`
 }
 
 type source struct {
@@ -40,22 +54,38 @@ type source struct {
 	Position int    `json:"position"`
 }
 
+type verifiedInfo struct {
+	Status bool   `json:"status"`
+	Info   string `json:"info"`
+}
+
 type jsonEntry struct {
-	Subject        pkix.Name `json:"subject"`
-	Version        int       `json:"version"`
-	Serialnumber   string    `json:"serialnumber"`
-	SignAlgo       string    `json:"signature algorithm"`
-	Issuer         pkix.Name `json:"issuer"`
-	Validity       validity  `json:"validity"`
-	KeyUsage       []string  `json:"key usage"`
-	ExtKeyUsage    []string  `json:"extended key usage"`
-	AltNames       []string  `json:"alternative names"`
-	SubjectKeyID   string    `json:"subject key id"`
-	AuthorityKeyID string    `json:"authority key id"`
-	CA             bool      `json:"ca"`
-	Verified       string    `json:"verified"`
-	Source         []source  `json:"source"`
+	Subject        jsonName     `json:"subject"`
+	Version        int          `json:"version"`
+	SerialNumber   string       `json:"serialnumber"`
+	SignAlgo       string       `json:"signature_algorithm"`
+	Issuer         jsonName     `json:"issuer"`
+	Validity       validity     `json:"validity"`
+	KeyUsage       []string     `json:"key_usage"`
+	ExtKeyUsage    []string     `json:"extended_key_usage"`
+	AltNames       []string     `json:"alternative_names"`
+	SubjectKeyID   string       `json:"subject_key_id"`
+	AuthorityKeyID string       `json:"authority_key_id"`
+	CA             bool         `json:"ca"`
+	Verified       verifiedInfo `json:"verified"`
+	Source         []source     `json:"source"`
 	chaindepth     int
+}
+type jsonName struct {
+	Country            []string `json:"country"`
+	Organization       []string `json:"organization"`
+	OrganizationalUnit []string `json:"organizational_unit"`
+	Locality           []string `json:"locality"`
+	Province           []string `json:"province"`
+	StreetAddress      []string `json:"street_address"`
+	PostalCode         []string `json:"postal_code"`
+	SerialNumber       string   `json:"serial_number"`
+	CommonName         string   `json:"common_name"`
 }
 
 func main() {
@@ -110,7 +140,7 @@ func run() error {
 
 	jl, err := certlist.initJSONList(chain)
 	if err != nil {
-		return errors.Wrap(err, "failed to prepare JSON list")
+		return errors.Wrap(err, "failed to initialize the JSON list")
 	}
 
 	if err = jl.printAll(*jsonflag); err != nil {
@@ -196,8 +226,9 @@ func (el entryList) verifyAllCerts(disablesysroot bool) error {
 				return curentry.verified
 			case nil:
 				wip = true
+			default:
+				notdone = true
 			}
-			notdone = notdone || (curentry.verified != nil)
 			el[idx] = curentry
 		}
 	}
@@ -222,14 +253,14 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 }
 
 func (el entryList) mergeChain() ([][]*x509.Certificate, error) {
-	type chainstruct struct {
+	type chainStruct struct {
 		chain    []*x509.Certificate
 		subchain bool
 	}
-	var allchains []chainstruct
+	var allchains []chainStruct
 	for _, v := range el {
 		for _, c := range v.chain {
-			allchains = append(allchains, chainstruct{chain: c, subchain: false})
+			allchains = append(allchains, chainStruct{chain: c, subchain: false})
 		}
 	}
 
@@ -266,31 +297,27 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 
 func (el entryList) initJSONList(chainlist [][]*x509.Certificate) (jsonList, error) {
 	var jl jsonList
-
 	for _, chainval := range chainlist {
 		for certidx, certval := range chainval {
-			certentry, err := el.checkChain(certval)
+			certentry, err := el.getEntryfromChain(certval)
 			if err != nil {
 				return nil, err
 			}
-
-			if err := jl.initJSON(certentry, certidx); err != nil {
-				return nil, err
-			}
+			jsn := initJSON(certentry, certidx)
+			jl = append(jl, jsn)
 		}
 	}
 
 	for _, e := range el {
 		if !e.inChain {
-			if err := jl.initJSON(e, 0); err != nil {
-				return nil, err
-			}
+			jsn := initJSON(e, 0)
+			jl = append(jl, jsn)
 		}
 	}
 	return jl, nil
 }
 
-func (el entryList) checkChain(certval *x509.Certificate) (entry, error) {
+func (el entryList) getEntryfromChain(certval *x509.Certificate) (entry, error) {
 	certentry := entry{
 		cert:   certval,
 		source: []source{source{Name: "Certificate from System Roots", Position: 0}},
@@ -306,121 +333,139 @@ func (el entryList) checkChain(certval *x509.Certificate) (entry, error) {
 	return certentry, nil
 }
 
-func (jl *jsonList) initJSON(e entry, chaindepth int) error {
-	jsn := jsonEntry{
-		Subject:        e.cert.Subject,
+func initJSON(e entry, chaindepth int) jsonEntry {
+	return jsonEntry{
+		Subject:        initName(e.cert.Subject),
 		Version:        e.cert.Version,
 		SignAlgo:       e.cert.SignatureAlgorithm.String(),
-		Issuer:         e.cert.Issuer,
+		Issuer:         initName(e.cert.Issuer),
 		CA:             e.cert.IsCA,
 		Source:         e.source,
-		Serialnumber:   encodeHex(e.cert.SerialNumber.Bytes()),
+		SerialNumber:   encodeHex(e.cert.SerialNumber.Bytes()),
+		KeyUsage:       initKeyUsage(e.cert.KeyUsage),
+		ExtKeyUsage:    initExtKeyUsage(e.cert),
+		AltNames:       initAltNames(e.cert),
 		SubjectKeyID:   encodeHex(e.cert.SubjectKeyId),
 		AuthorityKeyID: encodeHex(e.cert.AuthorityKeyId),
+		Verified:       initVerified(e),
 		chaindepth:     chaindepth,
 		Validity: validity{
 			NotBefore: e.cert.NotBefore,
 			NotAfter:  e.cert.NotAfter},
 	}
-
-	jsn.initKeyUsage(e.cert.KeyUsage)
-	jsn.initExtKeyUsage(e.cert)
-	jsn.initAltNames(e.cert)
-
-	if e.verified == nil {
-		if isSelfSignedRoot(e.cert) {
-			jsn.Verified = "true, self signed"
-		} else {
-			jsn.Verified = "true"
-		}
-	} else {
-		jsn.Verified = "false, " + e.verified.Error()
-	}
-	*jl = append(*jl, jsn)
-	return nil
 }
 
-func (je *jsonEntry) initAltNames(cert *x509.Certificate) {
-	for _, v := range cert.DNSNames {
-		je.AltNames = append(je.AltNames, "DNS:"+v)
-	}
-	for _, v := range cert.EmailAddresses {
-		je.AltNames = append(je.AltNames, "EMAIL:"+v)
-	}
-	for _, v := range cert.IPAddresses {
-		je.AltNames = append(je.AltNames, "IP:"+string(v))
-	}
-	for _, v := range cert.URIs {
-		je.AltNames = append(je.AltNames, "URI:"+v.RawQuery)
+func initName(name pkix.Name) jsonName {
+	return jsonName{
+		Country:            name.Country,
+		Organization:       name.Organization,
+		OrganizationalUnit: name.OrganizationalUnit,
+		Locality:           name.Locality,
+		Province:           name.Province,
+		StreetAddress:      name.StreetAddress,
+		PostalCode:         name.PostalCode,
+		SerialNumber:       name.SerialNumber,
+		CommonName:         name.CommonName,
 	}
 }
 
-func (je *jsonEntry) initKeyUsage(val x509.KeyUsage) {
+func initKeyUsage(val x509.KeyUsage) []string {
+	var keyusage []string
 	if val&x509.KeyUsageDigitalSignature > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Digital Signiture")
+		keyusage = append(keyusage, "Digital Signiture")
 	}
 	if val&x509.KeyUsageContentCommitment > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Content Commitment")
+		keyusage = append(keyusage, "Content Commitment")
 	}
 	if val&x509.KeyUsageKeyEncipherment > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Key Encipherment")
+		keyusage = append(keyusage, "Key Encipherment")
 	}
 	if val&x509.KeyUsageDataEncipherment > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Data Encipherment")
+		keyusage = append(keyusage, "Data Encipherment")
 	}
 	if val&x509.KeyUsageKeyAgreement > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Key Agreement")
+		keyusage = append(keyusage, "Key Agreement")
 	}
 	if val&x509.KeyUsageCertSign > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Cert Sign")
+		keyusage = append(keyusage, "Cert Sign")
 	}
 	if val&x509.KeyUsageCRLSign > 0 {
-		je.KeyUsage = append(je.KeyUsage, "CRL Sign")
+		keyusage = append(keyusage, "CRL Sign")
 	}
 	if val&x509.KeyUsageEncipherOnly > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Enciper Only")
+		keyusage = append(keyusage, "Enciper Only")
 	}
 	if val&x509.KeyUsageDecipherOnly > 0 {
-		je.KeyUsage = append(je.KeyUsage, "Decipher Only")
+		keyusage = append(keyusage, "Decipher Only")
 	}
+	return keyusage
 }
 
-func (je *jsonEntry) initExtKeyUsage(cert *x509.Certificate) {
+func initExtKeyUsage(cert *x509.Certificate) []string {
+	var extkeyusage []string
 	for _, v := range cert.ExtKeyUsage {
 		switch v {
 		case x509.ExtKeyUsageAny:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Any")
+			extkeyusage = append(extkeyusage, "Any")
 		case x509.ExtKeyUsageServerAuth:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Server Authentication")
+			extkeyusage = append(extkeyusage, "Server Authentication")
 		case x509.ExtKeyUsageClientAuth:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Client Authentication")
+			extkeyusage = append(extkeyusage, "Client Authentication")
 		case x509.ExtKeyUsageCodeSigning:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Code Signing")
+			extkeyusage = append(extkeyusage, "Code Signing")
 		case x509.ExtKeyUsageEmailProtection:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Email Protection")
+			extkeyusage = append(extkeyusage, "Email Protection")
 		case x509.ExtKeyUsageIPSECEndSystem:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC End System")
+			extkeyusage = append(extkeyusage, "IPSEC End System")
 		case x509.ExtKeyUsageIPSECTunnel:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC Tunnel")
+			extkeyusage = append(extkeyusage, "IPSEC Tunnel")
 		case x509.ExtKeyUsageIPSECUser:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "IPSEC User")
+			extkeyusage = append(extkeyusage, "IPSEC User")
 		case x509.ExtKeyUsageTimeStamping:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Time Stamping")
+			extkeyusage = append(extkeyusage, "Time Stamping")
 		case x509.ExtKeyUsageOCSPSigning:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "OCSP Signing")
+			extkeyusage = append(extkeyusage, "OCSP Signing")
 		case x509.ExtKeyUsageMicrosoftServerGatedCrypto:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Server Gated Crypto")
+			extkeyusage = append(extkeyusage, "Microsoft Server Gated Crypto")
 		case x509.ExtKeyUsageNetscapeServerGatedCrypto:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Netscape Server Gated Crypto")
+			extkeyusage = append(extkeyusage, "Netscape Server Gated Crypto")
 		case x509.ExtKeyUsageMicrosoftCommercialCodeSigning:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Commercial Code Signing")
+			extkeyusage = append(extkeyusage, "Microsoft Commercial Code Signing")
 		case x509.ExtKeyUsageMicrosoftKernelCodeSigning:
-			je.ExtKeyUsage = append(je.ExtKeyUsage, "Microsoft Kernel Code Signing")
+			extkeyusage = append(extkeyusage, "Microsoft Kernel Code Signing")
 		}
 	}
 	for _, v := range cert.UnknownExtKeyUsage {
-		je.ExtKeyUsage = append(je.ExtKeyUsage, v.String())
+		extkeyusage = append(extkeyusage, v.String())
 	}
+	return extkeyusage
+}
+
+func initAltNames(cert *x509.Certificate) []string {
+	var altnames []string
+	for _, v := range cert.DNSNames {
+		altnames = append(altnames, "DNS:"+v)
+	}
+	for _, v := range cert.EmailAddresses {
+		altnames = append(altnames, "EMAIL:"+v)
+	}
+	for _, v := range cert.IPAddresses {
+		altnames = append(altnames, "IP:"+string(v))
+	}
+	for _, v := range cert.URIs {
+		altnames = append(altnames, "URI:"+v.RawQuery)
+	}
+	return altnames
+}
+
+func initVerified(e entry) verifiedInfo {
+	if e.verified == nil {
+		if isSelfSignedRoot(e.cert) {
+			return verifiedInfo{true, "self signed"}
+		}
+		return verifiedInfo{true, ""}
+	}
+	return verifiedInfo{false, e.verified.Error()}
 }
 
 func (jl jsonList) printAll(jsonflag bool) error {
@@ -460,11 +505,11 @@ func (jl jsonList) printInfo() {
 func printEntry(jsn jsonEntry) {
 	tab := strings.Repeat(" ", jsn.chaindepth*4)
 
-	fmt.Println(tab, "Subject          :", printName(jsn.Subject))
+	fmt.Println(tab, "Subject          :", formatName(jsn.Subject))
 	fmt.Println(tab, "Version          :", jsn.Version)
-	fmt.Println(tab, "Serial Number    :", jsn.Serialnumber)
+	fmt.Println(tab, "Serial Number    :", jsn.SerialNumber)
 	fmt.Println(tab, "Sign Algo        :", jsn.SignAlgo)
-	fmt.Println(tab, "Issuer           :", printName(jsn.Issuer))
+	fmt.Println(tab, "Issuer           :", formatName(jsn.Issuer))
 	fmt.Println(tab, "Validity:")
 	fmt.Println(tab, "  Not Before     :", jsn.Validity.NotBefore)
 	fmt.Println(tab, "  Not After      :", jsn.Validity.NotAfter)
@@ -472,15 +517,22 @@ func printEntry(jsn jsonEntry) {
 	fmt.Println(tab, "Ext Key Usage    :", strings.Join(jsn.ExtKeyUsage, ", "))
 	fmt.Println(tab, "Alt Names        :", strings.Join(jsn.AltNames, ", "))
 	fmt.Println(tab, "Subject Key ID   :", jsn.SubjectKeyID)
-	fmt.Println(tab, "Authority Key ID :", jsn.AuthorityKeyID)
+	fmt.Println(tab, "Authority Key IprintInfoD :", jsn.AuthorityKeyID)
 	fmt.Println(tab, "CA               :", jsn.CA)
-	fmt.Println(tab, "Verified         :", jsn.Verified)
+	fmt.Println(tab, "Verified         :", formatVerified(jsn.Verified))
 	printSources(jsn.Source, tab)
 	fmt.Println()
 	return
 }
 
-func printName(val pkix.Name) string {
+func formatVerified(vi verifiedInfo) string {
+	if vi.Info != "" {
+		return fmt.Sprintf("%v (%s)", vi.Status, vi.Info)
+	}
+	return fmt.Sprintf("%v", vi.Status)
+}
+
+func formatName(val jsonName) string {
 	var names []string
 	for _, v := range val.Country {
 		names = append(names, "C = "+v)
@@ -510,13 +562,18 @@ func printName(val pkix.Name) string {
 }
 
 func printSources(sources []source, tab string) {
-	for _, src := range sources {
-		if src.Position > 0 {
-			sourcetext := src.Name + " | Certificate: " + strconv.Itoa(src.Position)
-			fmt.Println(tab, "Source           :", sourcetext)
-		} else {
-			fmt.Println(tab, "Source           : System Root")
+	sort.Slice(sources, func(i, j int) bool {
+		if sources[i].Name != sources[j].Name {
+			return sources[i].Name < sources[j].Name
 		}
+		return sources[i].Position < sources[j].Position
+	})
+	for _, src := range sources {
+		sourcetext := src.Name
+		if src.Position > 0 {
+			sourcetext += " | Certificate: " + strconv.Itoa(src.Position)
+		}
+		fmt.Println(tab, "Source           :", sourcetext)
 	}
 }
 

@@ -165,6 +165,7 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 	var blocklist []*pem.Block
 	for {
 		block, rest := pem.Decode(certPEM)
+		certPEM = rest
 		if block == nil {
 			break
 		}
@@ -172,7 +173,6 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 			continue
 		}
 		blocklist = append(blocklist, block)
-		certPEM = rest
 	}
 	if len(blocklist) == 0 {
 		return nil, errors.New("No certificates to check")

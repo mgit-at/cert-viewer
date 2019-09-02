@@ -1,4 +1,4 @@
-module certviewer
+module github.com/mgit-at/cert-viewer
 
 go 1.12
 

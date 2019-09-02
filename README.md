@@ -8,7 +8,7 @@ $ go get github.com/mgit-at/cert-viewer
 
 ## Usage:
 ```sh
-usage: CertViewer [<flags>] <name>...
+usage: cert-viewer [<flags>] <name>...
 
 Flags:
   --help            Show context-sensitive help (also try --help-long and --help-man).

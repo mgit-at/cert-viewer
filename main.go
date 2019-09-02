@@ -33,6 +33,7 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
+//entry holds a certificate with extra information like the source or its verification
 type entry struct {
 	cert     *x509.Certificate
 	source   []source
@@ -44,21 +45,25 @@ type entry struct {
 type entryList []entry
 type jsonList []jsonEntry
 
+//validity holds from when till when a certificate is valid
 type validity struct {
 	NotBefore time.Time `json:"not_before"`
 	NotAfter  time.Time `json:"not_after"`
 }
 
+//source struct with information about filename and position in that file from the source
 type source struct {
 	Name     string `json:"name"`
 	Position int    `json:"position"`
 }
 
+//verifiedInfo 	status of the verification and some extra information
 type verifiedInfo struct {
 	Status bool   `json:"status"`
 	Info   string `json:"info"`
 }
 
+//jsonEntry for a certificate entry
 type jsonEntry struct {
 	Subject        jsonName     `json:"subject"`
 	Version        int          `json:"version"`
@@ -76,6 +81,8 @@ type jsonEntry struct {
 	Source         []source     `json:"source"`
 	chaindepth     int
 }
+
+//jsonname json struct for pkix name
 type jsonName struct {
 	Country            []string `json:"country"`
 	Organization       []string `json:"organization"`
@@ -94,6 +101,7 @@ func main() {
 	}
 }
 
+//run is the main function
 func run() error {
 	var (
 		names          = kingpin.Arg("name", "filename and/or directory paths").Required().Strings()
@@ -150,6 +158,7 @@ func run() error {
 	return nil
 }
 
+//isSelfSignedRoot checks if a x509 certificate is self signed
 func isSelfSignedRoot(cert *x509.Certificate) bool {
 	if cert.AuthorityKeyId != nil {
 		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
@@ -157,10 +166,12 @@ func isSelfSignedRoot(cert *x509.Certificate) bool {
 	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }
 
+//compareCert compares if two certificates are the same
 func compareCert(cert1, cert2 *x509.Certificate) bool {
 	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
 }
 
+//decode returns a slice of pem blocks from byte slice
 func decode(certPEM []byte) ([]*pem.Block, error) {
 	var blocklist []*pem.Block
 	for {
@@ -180,6 +191,7 @@ func decode(certPEM []byte) ([]*pem.Block, error) {
 	return blocklist, nil
 }
 
+//parse iterates through all pem blocks and parses it into x509 certificate
 func (el *entryList) parse(blocklist []*pem.Block, filename string) error {
 nextBlock:
 	for i, block := range blocklist {
@@ -204,6 +216,8 @@ nextBlock:
 	return nil
 }
 
+//verifyAllCerts verifies all certificates from the entry list
+//and uses the system root certificates if the flag is not set
 func (el entryList) verifyAllCerts(disablesysroot bool) error {
 	pool, roots := x509.NewCertPool(), x509.NewCertPool()
 	if !disablesysroot {
@@ -235,6 +249,8 @@ func (el entryList) verifyAllCerts(disablesysroot bool) error {
 	return nil
 }
 
+//verify returns a x509 certificate chain slice when the certificate was able to be verified
+//otherwise the error is returned
 func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certificate, error) {
 	if isSelfSignedRoot(e.cert) {
 		root.AddCert(e.cert)
@@ -252,6 +268,7 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 	return chain, nil
 }
 
+//mergeChain merges all chain slices from the entryList together into a single chain slice
 func (el entryList) mergeChain() ([][]*x509.Certificate, error) {
 	type chainStruct struct {
 		chain    []*x509.Certificate
@@ -281,6 +298,7 @@ func (el entryList) mergeChain() ([][]*x509.Certificate, error) {
 	return reducedchain, nil
 }
 
+//isSubchain checks if subchain is a branch of the mainchain
 func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	if len(mainchain) <= len(subchain) {
 		return false
@@ -295,6 +313,7 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	return true
 }
 
+//initJSONList initializes a jsonList from a list of x509 certificate chains
 func (el entryList) initJSONList(chainlist [][]*x509.Certificate) (jsonList, error) {
 	var jl jsonList
 	for _, chainval := range chainlist {
@@ -317,6 +336,8 @@ func (el entryList) initJSONList(chainlist [][]*x509.Certificate) (jsonList, err
 	return jl, nil
 }
 
+//getEntryfromChain returns a entry object from a x509 certifcate
+//depending if the certificate could be found in the entryList source and source position are added
 func (el entryList) getEntryfromChain(certval *x509.Certificate) (entry, error) {
 	certentry := entry{
 		cert:   certval,
@@ -333,6 +354,7 @@ func (el entryList) getEntryfromChain(certval *x509.Certificate) (entry, error) 
 	return certentry, nil
 }
 
+//initJSON initializes a jsonEntry object from an entry
 func initJSON(e entry, chaindepth int) jsonEntry {
 	return jsonEntry{
 		Subject:        initName(e.cert.Subject),
@@ -355,6 +377,7 @@ func initJSON(e entry, chaindepth int) jsonEntry {
 	}
 }
 
+//initNames initializes a jsonName object from a pkix Name object
 func initName(name pkix.Name) jsonName {
 	return jsonName{
 		Country:            name.Country,
@@ -369,6 +392,7 @@ func initName(name pkix.Name) jsonName {
 	}
 }
 
+//initKeyUsage initializes a string slice with filled the Key Usages from a x509 certificate
 func initKeyUsage(val x509.KeyUsage) []string {
 	var keyusage []string
 	if val&x509.KeyUsageDigitalSignature > 0 {
@@ -401,6 +425,7 @@ func initKeyUsage(val x509.KeyUsage) []string {
 	return keyusage
 }
 
+//initExtKeyUsage initializes a string slice with filled the extended Key Usages from a x509 certificate
 func initExtKeyUsage(cert *x509.Certificate) []string {
 	var extkeyusage []string
 	for _, v := range cert.ExtKeyUsage {
@@ -441,6 +466,7 @@ func initExtKeyUsage(cert *x509.Certificate) []string {
 	return extkeyusage
 }
 
+//initAltNames initializes a string slice filled with the alternative names from a x509 certificate
 func initAltNames(cert *x509.Certificate) []string {
 	var altnames []string
 	for _, v := range cert.DNSNames {
@@ -458,6 +484,7 @@ func initAltNames(cert *x509.Certificate) []string {
 	return altnames
 }
 
+//initVerified initializes a verifiedInfo object from an entry
 func initVerified(e entry) verifiedInfo {
 	if e.verified == nil {
 		if isSelfSignedRoot(e.cert) {
@@ -468,6 +495,7 @@ func initVerified(e entry) verifiedInfo {
 	return verifiedInfo{false, e.verified.Error()}
 }
 
+//printAll calls printJSON or printINFO depending if the jsonflag is set or not
 func (jl jsonList) printAll(jsonflag bool) error {
 	if jsonflag {
 		if err := jl.printJSON(); err != nil {
@@ -479,6 +507,7 @@ func (jl jsonList) printAll(jsonflag bool) error {
 	return nil
 }
 
+//printJSON pritns all elements from jsonlist in JSON syntax
 func (jl jsonList) printJSON() error {
 	data, err := json.MarshalIndent(jl, "", "  ")
 	if err != nil {
@@ -488,6 +517,7 @@ func (jl jsonList) printJSON() error {
 	return nil
 }
 
+//printInfo prints all elements from the jsonList
 func (jl jsonList) printInfo() {
 	for i, jsn := range jl {
 		if i > 0 {
@@ -502,6 +532,7 @@ func (jl jsonList) printInfo() {
 	}
 }
 
+//printEntry prints a jsonEntry object
 func printEntry(jsn jsonEntry) {
 	tab := strings.Repeat(" ", jsn.chaindepth*4)
 
@@ -525,6 +556,7 @@ func printEntry(jsn jsonEntry) {
 	return
 }
 
+//formatVerified formats a verifiedInfo object to a string
 func formatVerified(vi verifiedInfo) string {
 	if vi.Info != "" {
 		return fmt.Sprintf("%v (%s)", vi.Status, vi.Info)
@@ -532,6 +564,7 @@ func formatVerified(vi verifiedInfo) string {
 	return fmt.Sprintf("%v", vi.Status)
 }
 
+//formatName formats a jsonName object to a string
 func formatName(val jsonName) string {
 	var names []string
 	for _, v := range val.Country {
@@ -561,6 +594,8 @@ func formatName(val jsonName) string {
 	return strings.Join(names, ", ")
 }
 
+//printSources prints the source list
+//tab is concatinated infront of the message in every printline
 func printSources(sources []source, tab string) {
 	sort.Slice(sources, func(i, j int) bool {
 		if sources[i].Name != sources[j].Name {
@@ -577,6 +612,7 @@ func printSources(sources []source, tab string) {
 	}
 }
 
+//encodeHex return a more readable out put of hex values
 func encodeHex(val []byte) string {
 	var names []string
 	for _, v := range val {

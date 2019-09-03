@@ -476,7 +476,7 @@ func initAltNames(cert *x509.Certificate) []string {
 		altnames = append(altnames, "EMAIL:"+v)
 	}
 	for _, v := range cert.IPAddresses {
-		altnames = append(altnames, "IP:"+string(v))
+		altnames = append(altnames, "IP:"+v.String())
 	}
 	for _, v := range cert.URIs {
 		altnames = append(altnames, "URI:"+v.RawQuery)

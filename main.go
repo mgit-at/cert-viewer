@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -33,7 +34,14 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
-//entry holds a certificate with extra information like the source or its verification
+/*
+check errors to be helpful
+
+-- bazel
+
+*/
+
+// entry holds a certificate with extra information like the source or its verification.
 type entry struct {
 	cert     *x509.Certificate
 	source   []source
@@ -45,25 +53,32 @@ type entry struct {
 type entryList []entry
 type jsonList []jsonEntry
 
-//validity holds from when till when a certificate is valid
+// validity holds from when till when a certificate is valid.
 type validity struct {
 	NotBefore time.Time `json:"not_before"`
 	NotAfter  time.Time `json:"not_after"`
 }
 
-//source struct with information about filename and position in that file from the source
+// source is a struct with information about filename and position in that file from the source.
 type source struct {
 	Name     string `json:"name"`
 	Position int    `json:"position"`
 }
 
-//verifiedInfo 	status of the verification and some extra information
+// verifiedInfo holds status of the verification and some extra information,
+// like error message and if it is self signed.
 type verifiedInfo struct {
 	Status bool   `json:"status"`
 	Info   string `json:"info"`
 }
 
-//jsonEntry for a certificate entry
+type blockInfo struct {
+	block *pem.Block
+	src   source
+	err   error
+}
+
+// jsonEntry for a certificate entry.
 type jsonEntry struct {
 	Subject        jsonName     `json:"subject"`
 	Version        int          `json:"version"`
@@ -82,7 +97,7 @@ type jsonEntry struct {
 	chaindepth     int
 }
 
-//jsonname json struct for pkix name
+// jsonname json struct for pkix name.
 type jsonName struct {
 	Country            []string `json:"country"`
 	Organization       []string `json:"organization"`
@@ -95,13 +110,16 @@ type jsonName struct {
 	CommonName         string   `json:"common_name"`
 }
 
+type decodeerror error
+
+// main runs the run function and prints errors.
 func main() {
 	if err := run(); err != nil {
 		log.Fatal("[ERROR] ", err)
 	}
 }
 
-//run is the main function
+// run runs all step: reading, decoding, parsing, logic and printing.
 func run() error {
 	var (
 		names          = kingpin.Arg("name", "filename and/or directory paths").Required().Strings()
@@ -121,19 +139,23 @@ func run() error {
 				if err != nil {
 					return errors.Wrapf(err, "failed to read file %q", path)
 				}
-				nblocklist, err := decode(certpem)
+				nblocklist, err := certlist.decode(certpem, path)
 				if err != nil {
-					return errors.Wrap(err, "failed to decode PEM")
+					return errors.Wrap(err, "failed to decode")
 				}
 
-				if err := certlist.parse(nblocklist, path); err != nil {
+				if err := certlist.parse(nblocklist); err != nil {
+					switch err.(type) {
+					case decodeerror:
+						return errors.Wrap(err, "failed to decode")
+					}
 					return errors.Wrap(err, "failed to parse")
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to file walk")
+			return errors.Wrap(err, "failed at file walk")
 		}
 	}
 
@@ -141,24 +163,16 @@ func run() error {
 		return errors.Wrap(err, "failed to verify")
 	}
 
-	chain, err := certlist.mergeChain()
-	if err != nil {
-		return errors.Wrap(err, "failed to parse")
-	}
+	chain := certlist.mergeChain()
+	jl := certlist.initJSONList(chain)
 
-	jl, err := certlist.initJSONList(chain)
-	if err != nil {
-		return errors.Wrap(err, "failed to initialize the JSON list")
-	}
-
-	if err = jl.printAll(*jsonflag); err != nil {
+	if err := jl.printAll(*jsonflag); err != nil {
 		return errors.Wrap(err, "failed to print")
 	}
-
 	return nil
 }
 
-//isSelfSignedRoot checks if a x509 certificate is self signed
+// isSelfSignedRoot checks if a x509 certificate is self signed.
 func isSelfSignedRoot(cert *x509.Certificate) bool {
 	if cert.AuthorityKeyId != nil {
 		return string(cert.AuthorityKeyId) == string(cert.SubjectKeyId) && cert.IsCA
@@ -166,58 +180,154 @@ func isSelfSignedRoot(cert *x509.Certificate) bool {
 	return cert.Subject.String() == cert.Issuer.String() && cert.IsCA
 }
 
-//compareCert compares if two certificates are the same
+// compareCert compares if two certificates are the same.
 func compareCert(cert1, cert2 *x509.Certificate) bool {
 	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
 }
 
-//decode returns a slice of pem blocks from byte slice
-func decode(certPEM []byte) ([]*pem.Block, error) {
-	var blocklist []*pem.Block
-	for {
-		block, rest := pem.Decode(certPEM)
+// decode returns a slice of pem blocks from byte slice.
+func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error) {
+	var blocklist []blockInfo
+	var derror error
+	for i := 1; ; i++ {
+		data, rest, err := findPEMBlock(certPEM)
+		if err != nil {
+			if len(blocklist) == 0 {
+				derror = err
+				break
+			}
+			return nil, errors.Wrapf(err, "failed to find a PEM in file %q", filename)
+		}
+		block, _ := pem.Decode(data)
 		certPEM = rest
 		if block == nil {
+			return nil, errors.New("error while decoding block " + strconv.Itoa(i) + ", in file " + filename)
+		}
+		if strings.Contains(block.Type, "CERTIFICATE") {
+			blocklist = append(blocklist, blockInfo{block, source{filename, i}, nil})
+		}
+		if rest == nil {
 			break
 		}
-		if !strings.Contains(block.Type, "CERTIFICATE") {
-			continue
-		}
-		blocklist = append(blocklist, block)
 	}
 	if len(blocklist) == 0 {
-		return nil, errors.New("No certificates to check")
+		block := pem.Block{Bytes: certPEM}
+		blocklist = append(blocklist, blockInfo{&block, source{filename, 1}, derror})
 	}
 	return blocklist, nil
 }
 
-//parse iterates through all pem blocks and parses it into x509 certificate
-func (el *entryList) parse(blocklist []*pem.Block, filename string) error {
+func findPEMBlock(data []byte) ([]byte, []byte, error) {
+	var pemStart = []byte("\n-----BEGIN ")
+	var pemEnd = []byte("\n-----END ")
+	var pemEndOfLine = []byte("-----")
+
+	data = bytes.TrimSpace(data) //TODO should i do that??????
+	rest := data
+	start := 0
+	if bytes.HasPrefix(data, pemStart[1:]) {
+		rest = rest[len(pemStart)-1:]
+	} else if start = bytes.Index(data, pemStart); start >= 0 {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (unexpected symbol(s): \"" + string(data[:start]) + "\")"))
+	} else {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"-----BEGIN TYPE-----\"), in this input: \"" + string(data) + "\""))
+	}
+
+	typeLine, rest := getLine(rest)
+	if !bytes.HasSuffix(typeLine, pemEndOfLine) {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"----\"- after \"-----BEGIN TYPE\")"))
+	}
+	typeLine = typeLine[0 : len(typeLine)-len(pemEndOfLine)]
+
+	endIndex := bytes.Index(rest, pemEnd)
+	endTrailerIndex := endIndex + len(pemEnd)
+
+	if endIndex < 0 {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"-----END TYPE-----\")"))
+	}
+
+	// After the "-----" of the ending line, there should be the same type
+	// and then a final five dashes.
+	endTrailer := rest[endTrailerIndex:]
+	endTrailerLen := len(typeLine) + len(pemEndOfLine)
+	if len(endTrailer) < endTrailerLen {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"TYPE-----\" after \"-----END \")"))
+	}
+
+	restOfEndLine := endTrailer[endTrailerLen:]
+	endTrailer = endTrailer[:endTrailerLen]
+	if !bytes.HasPrefix(endTrailer, typeLine) ||
+		!bytes.HasSuffix(endTrailer, pemEndOfLine) {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (wrong \"TYPE\" or no \"-----\")"))
+	}
+
+	// The line must end with only whitespace.
+	if s, _ := getLine(restOfEndLine); len(s) != 0 {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (found non whitespace)"))
+	}
+
+	end := start + endIndex + 2*len(typeLine) + 2*len(pemEndOfLine) + len(pemStart) + len(pemEnd)
+	if end == len(data) {
+		rest = nil
+	} else {
+		rest = bytes.TrimSpace(data[end:])
+	}
+	data = bytes.TrimSpace(data[start:end])
+	return data, rest, nil
+}
+
+// getLine results the first \r\n or \n delineated line from the given byte
+// array. The line does not include trailing whitespace or the trailing new
+// line bytes. The remainder of the byte array (also not including the new line
+// bytes) is also returned and this will always be smaller than the original
+// argument.
+//
+// copied from encoding/pem.
+func getLine(data []byte) (line, rest []byte) {
+	i := bytes.IndexByte(data, '\n')
+	var j int
+	if i < 0 {
+		i = len(data)
+		j = i
+	} else {
+		j = i + 1
+		if i > 0 && data[i-1] == '\r' {
+			i--
+		}
+	}
+	return bytes.TrimRight(data[0:i], " \t"), data[j:]
+}
+
+// parse iterates through all pem blocks and parses it into x509 certificate.
+func (el *entryList) parse(blocklist []blockInfo) error {
 nextBlock:
-	for i, block := range blocklist {
-		c, err := x509.ParseCertificate(block.Bytes)
+	for _, bi := range blocklist {
+		c, err := x509.ParseCertificate(bi.block.Bytes)
 		if err != nil {
-			return errors.Wrapf(err, "failed to parse PEM block")
+			if bi.err != nil {
+				return bi.err
+			}
+			return errors.Wrapf(err, "failed to parse block %q, in file %q", strconv.Itoa(bi.src.Position), bi.src.Name)
 		}
 
 		for idx, ent := range *el {
 			if compareCert(c, ent.cert) {
-				(*el)[idx].source = append((*el)[idx].source, source{filename, i + 1})
+				(*el)[idx].source = append((*el)[idx].source, bi.src)
 				continue nextBlock
 			}
 		}
-
 		e := entry{
 			cert:   c,
-			source: []source{source{filename, i + 1}},
+			source: []source{bi.src},
 		}
 		*el = append(*el, e)
 	}
 	return nil
 }
 
-//verifyAllCerts verifies all certificates from the entry list
-//and uses the system root certificates if the flag is not set
+// verifyAllCerts verifies all certificates from the entry list
+// and only uses the system root certificates
+// if the flag disablesysroot is not set.
 func (el entryList) verifyAllCerts(disablesysroot bool) error {
 	pool, roots := x509.NewCertPool(), x509.NewCertPool()
 	if !disablesysroot {
@@ -249,8 +359,8 @@ func (el entryList) verifyAllCerts(disablesysroot bool) error {
 	return nil
 }
 
-//verify returns a x509 certificate chain slice when the certificate was able to be verified
-//otherwise the error is returned
+// verify returns a x509 certificate chain slice when the certificate was able to be verified,
+// otherwise an error is returned.
 func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certificate, error) {
 	if isSelfSignedRoot(e.cert) {
 		root.AddCert(e.cert)
@@ -268,8 +378,8 @@ func verify(e entry, pool *x509.CertPool, root *x509.CertPool) ([][]*x509.Certif
 	return chain, nil
 }
 
-//mergeChain merges all chain slices from the entryList together into a single chain slice
-func (el entryList) mergeChain() ([][]*x509.Certificate, error) {
+// mergeChain merges all chain slices from the entryList together into a single chain slice.
+func (el entryList) mergeChain() [][]*x509.Certificate {
 	type chainStruct struct {
 		chain    []*x509.Certificate
 		subchain bool
@@ -295,10 +405,10 @@ func (el entryList) mergeChain() ([][]*x509.Certificate, error) {
 			reducedchain = append(reducedchain, v1.chain)
 		}
 	}
-	return reducedchain, nil
+	return reducedchain
 }
 
-//isSubchain checks if subchain is a branch of the mainchain
+// isSubchain checks if subchain is a branch of the mainchain.
 func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	if len(mainchain) <= len(subchain) {
 		return false
@@ -313,15 +423,12 @@ func isSubchain(mainchain, subchain []*x509.Certificate) bool {
 	return true
 }
 
-//initJSONList initializes a jsonList from a list of x509 certificate chains
-func (el entryList) initJSONList(chainlist [][]*x509.Certificate) (jsonList, error) {
+// initJSONList initializes a jsonList from a list of x509 certificate chains.
+func (el entryList) initJSONList(chainlist [][]*x509.Certificate) jsonList {
 	var jl jsonList
 	for _, chainval := range chainlist {
 		for certidx, certval := range chainval {
-			certentry, err := el.getEntryfromChain(certval)
-			if err != nil {
-				return nil, err
-			}
+			certentry := el.getEntryfromChain(certval)
 			jsn := initJSON(certentry, certidx)
 			jl = append(jl, jsn)
 		}
@@ -333,12 +440,13 @@ func (el entryList) initJSONList(chainlist [][]*x509.Certificate) (jsonList, err
 			jl = append(jl, jsn)
 		}
 	}
-	return jl, nil
+	return jl
 }
 
-//getEntryfromChain returns a entry object from a x509 certifcate
-//depending if the certificate could be found in the entryList source and source position are added
-func (el entryList) getEntryfromChain(certval *x509.Certificate) (entry, error) {
+// getEntryfromChain returns a entry object from a x509 certifcate.
+// If the certificate could be found in the entryList,
+// source and source-position are added.
+func (el entryList) getEntryfromChain(certval *x509.Certificate) entry {
 	certentry := entry{
 		cert:   certval,
 		source: []source{source{Name: "Certificate from System Roots", Position: 0}},
@@ -351,10 +459,10 @@ func (el entryList) getEntryfromChain(certval *x509.Certificate) (entry, error) 
 			break
 		}
 	}
-	return certentry, nil
+	return certentry
 }
 
-//initJSON initializes a jsonEntry object from an entry
+// initJSON initializes a jsonEntry object from an entry.
 func initJSON(e entry, chaindepth int) jsonEntry {
 	return jsonEntry{
 		Subject:        initName(e.cert.Subject),
@@ -377,7 +485,7 @@ func initJSON(e entry, chaindepth int) jsonEntry {
 	}
 }
 
-//initNames initializes a jsonName object from a pkix Name object
+// initNames initializes a jsonName object from a pkix.Name object.
 func initName(name pkix.Name) jsonName {
 	return jsonName{
 		Country:            name.Country,
@@ -392,7 +500,7 @@ func initName(name pkix.Name) jsonName {
 	}
 }
 
-//initKeyUsage initializes a string slice with filled the Key Usages from a x509 certificate
+// initKeyUsage initializes a string slice with filled the Key Usages from a x509 certificate.
 func initKeyUsage(val x509.KeyUsage) []string {
 	var keyusage []string
 	if val&x509.KeyUsageDigitalSignature > 0 {
@@ -425,7 +533,7 @@ func initKeyUsage(val x509.KeyUsage) []string {
 	return keyusage
 }
 
-//initExtKeyUsage initializes a string slice with filled the extended Key Usages from a x509 certificate
+// initExtKeyUsage initializes a string slice with filled the extended Key Usages from a x509 certificate.
 func initExtKeyUsage(cert *x509.Certificate) []string {
 	var extkeyusage []string
 	for _, v := range cert.ExtKeyUsage {
@@ -466,7 +574,7 @@ func initExtKeyUsage(cert *x509.Certificate) []string {
 	return extkeyusage
 }
 
-//initAltNames initializes a string slice filled with the alternative names from a x509 certificate
+// initAltNames initializes a string slice filled with the alternative names from a x509 certificate.
 func initAltNames(cert *x509.Certificate) []string {
 	var altnames []string
 	for _, v := range cert.DNSNames {
@@ -484,7 +592,7 @@ func initAltNames(cert *x509.Certificate) []string {
 	return altnames
 }
 
-//initVerified initializes a verifiedInfo object from an entry
+// initVerified initializes a verifiedInfo object from an entry.
 func initVerified(e entry) verifiedInfo {
 	if e.verified == nil {
 		if isSelfSignedRoot(e.cert) {
@@ -495,7 +603,7 @@ func initVerified(e entry) verifiedInfo {
 	return verifiedInfo{false, e.verified.Error()}
 }
 
-//printAll calls printJSON or printINFO depending if the jsonflag is set or not
+// printAll calls printJSON or printINFO depending if the jsonflag is set or not.
 func (jl jsonList) printAll(jsonflag bool) error {
 	if jsonflag {
 		if err := jl.printJSON(); err != nil {
@@ -507,7 +615,7 @@ func (jl jsonList) printAll(jsonflag bool) error {
 	return nil
 }
 
-//printJSON pritns all elements from jsonlist in JSON syntax
+// printJSON pritns all elements from jsonlist in JSON syntax.
 func (jl jsonList) printJSON() error {
 	data, err := json.MarshalIndent(jl, "", "  ")
 	if err != nil {
@@ -517,7 +625,7 @@ func (jl jsonList) printJSON() error {
 	return nil
 }
 
-//printInfo prints all elements from the jsonList
+// printInfo prints all elements from the jsonList.
 func (jl jsonList) printInfo() {
 	for i, jsn := range jl {
 		if i > 0 {
@@ -532,7 +640,7 @@ func (jl jsonList) printInfo() {
 	}
 }
 
-//printEntry prints a jsonEntry object
+// printEntry prints a jsonEntry object.
 func printEntry(jsn jsonEntry) {
 	tab := strings.Repeat(" ", jsn.chaindepth*4)
 
@@ -556,7 +664,7 @@ func printEntry(jsn jsonEntry) {
 	return
 }
 
-//formatVerified formats a verifiedInfo object to a string
+// formatVerified formats a verifiedInfo object to a string.
 func formatVerified(vi verifiedInfo) string {
 	if vi.Info != "" {
 		return fmt.Sprintf("%v (%s)", vi.Status, vi.Info)
@@ -564,7 +672,7 @@ func formatVerified(vi verifiedInfo) string {
 	return fmt.Sprintf("%v", vi.Status)
 }
 
-//formatName formats a jsonName object to a string
+// formatName formats a jsonName object to a string.
 func formatName(val jsonName) string {
 	var names []string
 	for _, v := range val.Country {
@@ -594,8 +702,8 @@ func formatName(val jsonName) string {
 	return strings.Join(names, ", ")
 }
 
-//printSources prints the source list
-//tab is concatinated infront of the message in every printline
+// printSources prints the source list.
+// tab is concatinated in front of the message in every printed line.
 func printSources(sources []source, tab string) {
 	sort.Slice(sources, func(i, j int) bool {
 		if sources[i].Name != sources[j].Name {
@@ -606,13 +714,13 @@ func printSources(sources []source, tab string) {
 	for _, src := range sources {
 		sourcetext := src.Name
 		if src.Position > 0 {
-			sourcetext += " | Certificate: " + strconv.Itoa(src.Position)
+			sourcetext += " | Block: " + strconv.Itoa(src.Position)
 		}
 		fmt.Println(tab, "Source           :", sourcetext)
 	}
 }
 
-//encodeHex return a more readable out put of hex values
+// encodeHex return a more readable out put of hex values.
 func encodeHex(val []byte) string {
 	var names []string
 	for _, v := range val {

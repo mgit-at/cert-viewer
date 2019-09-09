@@ -192,11 +192,13 @@ func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error
 	for i := 1; ; i++ {
 		data, rest, err := findPEMBlock(certPEM)
 		if err != nil {
+			derror = errors.Wrapf(err, "failed at file %q at block %q", filename, strconv.Itoa(i))
 			if len(blocklist) == 0 {
-				derror = err
-				break
+				block := pem.Block{Bytes: certPEM}
+				blocklist = append(blocklist, blockInfo{&block, source{filename, 1}, derror})
+				return blocklist, nil
 			}
-			return nil, errors.Wrapf(err, "failed to find a PEM in file %q", filename)
+			return nil, derror
 		}
 		block, _ := pem.Decode(data)
 		certPEM = rest
@@ -210,27 +212,22 @@ func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error
 			break
 		}
 	}
-	if len(blocklist) == 0 {
-		block := pem.Block{Bytes: certPEM}
-		blocklist = append(blocklist, blockInfo{&block, source{filename, 1}, derror})
-	}
 	return blocklist, nil
 }
 
 func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	var pemStart = []byte("\n-----BEGIN ")
-	var pemEnd = []byte("\n-----END ")
+	var pemEnd = []byte("-----END ")
 	var pemEndOfLine = []byte("-----")
 
 	data = bytes.TrimSpace(data) //TODO should i do that??????
 	rest := data
-	start := 0
 	if bytes.HasPrefix(data, pemStart[1:]) {
 		rest = rest[len(pemStart)-1:]
-	} else if start = bytes.Index(data, pemStart); start >= 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (unexpected symbol(s): \"" + string(data[:start]) + "\")"))
+	} else if i := bytes.Index(data, pemStart); i >= 0 {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (unexpected symbol(s): \"" + string(data[:i]) + "\")"))
 	} else {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"-----BEGIN TYPE-----\"), in this input: \"" + string(data) + "\""))
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"\\n-----BEGIN TYPE-----\"), in this input: \"" + string(data) + "\""))
 	}
 
 	typeLine, rest := getLine(rest)
@@ -239,17 +236,21 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	}
 	typeLine = typeLine[0 : len(typeLine)-len(pemEndOfLine)]
 
+	if bytes.HasPrefix(rest, pemEnd) {
+		fmt.Print("hello")
+	}
 	endIndex := bytes.Index(rest, pemEnd)
 	endTrailerIndex := endIndex + len(pemEnd)
 
 	if endIndex < 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"-----END TYPE-----\")"))
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"\\n-----END TYPE-----\")"))
 	}
 
 	// After the "-----" of the ending line, there should be the same type
 	// and then a final five dashes.
 	endTrailer := rest[endTrailerIndex:]
 	endTrailerLen := len(typeLine) + len(pemEndOfLine)
+
 	if len(endTrailer) < endTrailerLen {
 		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"TYPE-----\" after \"-----END \")"))
 	}
@@ -262,18 +263,24 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	}
 
 	// The line must end with only whitespace.
-	if s, _ := getLine(restOfEndLine); len(s) != 0 {
+	s, rest := getLine(restOfEndLine)
+	if len(s) != 0 {
 		return nil, nil, decodeerror(errors.New("failed to find PEM block (found non whitespace)"))
 	}
-
-	end := start + endIndex + 2*len(typeLine) + 2*len(pemEndOfLine) + len(pemStart) + len(pemEnd)
-	if end == len(data) {
-		rest = nil
-	} else {
-		rest = bytes.TrimSpace(data[end:])
+	end := endIndex + 2*len(typeLine) + 2*len(pemEndOfLine) + len(pemStart) + len(pemEnd) + 2
+	if end >= len(data) {
+		end = len(data)
 	}
-	data = bytes.TrimSpace(data[start:end])
-	return data, rest, nil
+	data = data[:end]
+	if data[len(data)-1] == '\r' {
+		data = data[:len(data)-1]
+	}
+
+	validate := data[len(pemStart)+len(pemEndOfLine)+len(typeLine) : len(data)]
+	if i := bytes.Index(validate, pemStart[1:]); i >= 0 {
+		return nil, nil, decodeerror(errors.New("failed to find PEM block (two \"-----BEGIN TYPE-----\" found"))
+	}
+	return bytes.TrimSpace(data), bytes.TrimSpace(rest), nil
 }
 
 // getLine results the first \r\n or \n delineated line from the given byte
@@ -282,7 +289,7 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 // bytes) is also returned and this will always be smaller than the original
 // argument.
 //
-// copied from encoding/pem.
+// vgl from encoding/pem
 func getLine(data []byte) (line, rest []byte) {
 	i := bytes.IndexByte(data, '\n')
 	var j int
@@ -309,7 +316,7 @@ nextBlock:
 			}
 			return errors.Wrapf(err, "failed to parse block %q, in file %q", strconv.Itoa(bi.src.Position), bi.src.Name)
 		}
-
+		fmt.Println()
 		for idx, ent := range *el {
 			if compareCert(c, ent.cert) {
 				(*el)[idx].source = append((*el)[idx].source, bi.src)

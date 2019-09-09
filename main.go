@@ -235,10 +235,6 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"----\"- after \"-----BEGIN TYPE\")"))
 	}
 	typeLine = typeLine[0 : len(typeLine)-len(pemEndOfLine)]
-
-	if bytes.HasPrefix(rest, pemEnd) {
-		fmt.Print("hello")
-	}
 	endIndex := bytes.Index(rest, pemEnd)
 	endTrailerIndex := endIndex + len(pemEnd)
 
@@ -316,7 +312,7 @@ nextBlock:
 			}
 			return errors.Wrapf(err, "failed to parse block %q, in file %q", strconv.Itoa(bi.src.Position), bi.src.Name)
 		}
-		fmt.Println()
+
 		for idx, ent := range *el {
 			if compareCert(c, ent.cert) {
 				(*el)[idx].source = append((*el)[idx].source, bi.src)

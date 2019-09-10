@@ -134,12 +134,12 @@ func run() error {
 			if err != nil {
 				return errors.Wrapf(err, "failed to read file %q", path)
 			}
-			if ext := strings.ToLower(filepath.Ext(info.Name())); ext == ".cert" || ext == ".crt" || ext == ".pem" {
+			if ext := strings.ToLower(filepath.Ext(info.Name())); ext == ".cert" || ext == ".crt" || ext == ".pem" || ext == ".cer" {
 				certpem, err := ioutil.ReadFile(path)
 				if err != nil {
 					return errors.Wrapf(err, "failed to read file %q", path)
 				}
-				nblocklist, err := certlist.decode(certpem, path)
+				nblocklist, err := decodePEM(certpem, path)
 				if err != nil {
 					return errors.Wrap(err, "failed to decode")
 				}
@@ -151,8 +151,9 @@ func run() error {
 					}
 					return errors.Wrap(err, "failed to parse")
 				}
+				return nil
 			}
-			return nil
+			return fmt.Errorf("failed to read file %q (wrong extension)", path)
 		})
 		if err != nil {
 			return errors.Wrap(err, "failed at file walk")
@@ -185,8 +186,8 @@ func compareCert(cert1, cert2 *x509.Certificate) bool {
 	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
 }
 
-// decode returns a slice of pem blocks from byte slice.
-func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error) {
+// decodePEM returns a slice of pem blocks from byte slice.
+func decodePEM(certPEM []byte, filename string) ([]blockInfo, error) {
 	var blocklist []blockInfo
 	var derror error
 	for i := 1; ; i++ {
@@ -203,7 +204,7 @@ func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error
 		block, _ := pem.Decode(data)
 		certPEM = rest
 		if block == nil {
-			return nil, errors.New("error while decoding block " + strconv.Itoa(i) + ", in file " + filename)
+			return nil, fmt.Errorf("error while decoding block %d, in file %q", i, filename)
 		}
 		if strings.Contains(block.Type, "CERTIFICATE") {
 			blocklist = append(blocklist, blockInfo{block, source{filename, i}, nil})
@@ -215,31 +216,32 @@ func (el *entryList) decode(certPEM []byte, filename string) ([]blockInfo, error
 	return blocklist, nil
 }
 
+// findPEMBlock finds the next PEM Block returns the Block, the rest of the data and returns errors
 func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	var pemStart = []byte("\n-----BEGIN ")
 	var pemEnd = []byte("-----END ")
 	var pemEndOfLine = []byte("-----")
 
-	data = bytes.TrimSpace(data) //TODO should i do that??????
+	data = bytes.TrimSpace(data)
 	rest := data
 	if bytes.HasPrefix(data, pemStart[1:]) {
 		rest = rest[len(pemStart)-1:]
 	} else if i := bytes.Index(data, pemStart); i >= 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (unexpected symbol(s): \"" + string(data[:i]) + "\")"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (unexpected symbol(s): \"%q\")", string(data[:i])))
 	} else {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"\\n-----BEGIN TYPE-----\"), in this input: \"" + string(data) + "\""))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (no \"\\n-----BEGIN TYPE-----\"), in this input: \"%q\"", string(data)))
 	}
 
 	typeLine, rest := getLine(rest)
 	if !bytes.HasSuffix(typeLine, pemEndOfLine) {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"----\"- after \"-----BEGIN TYPE\")"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (no \"----\"- after \"-----BEGIN TYPE\")"))
 	}
 	typeLine = typeLine[0 : len(typeLine)-len(pemEndOfLine)]
 	endIndex := bytes.Index(rest, pemEnd)
 	endTrailerIndex := endIndex + len(pemEnd)
 
 	if endIndex < 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"\\n-----END TYPE-----\")"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (no \"\\n-----END TYPE-----\")"))
 	}
 
 	// After the "-----" of the ending line, there should be the same type
@@ -248,20 +250,20 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	endTrailerLen := len(typeLine) + len(pemEndOfLine)
 
 	if len(endTrailer) < endTrailerLen {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (no \"TYPE-----\" after \"-----END \")"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (no \"TYPE-----\" after \"-----END \")"))
 	}
 
 	restOfEndLine := endTrailer[endTrailerLen:]
 	endTrailer = endTrailer[:endTrailerLen]
 	if !bytes.HasPrefix(endTrailer, typeLine) ||
 		!bytes.HasSuffix(endTrailer, pemEndOfLine) {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (wrong \"TYPE\" or no \"-----\")"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (wrong \"TYPE\" or no \"-----\")"))
 	}
 
 	// The line must end with only whitespace.
 	s, rest := getLine(restOfEndLine)
 	if len(s) != 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (found non whitespace)"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (found non whitespace)"))
 	}
 	end := endIndex + 2*len(typeLine) + 2*len(pemEndOfLine) + len(pemStart) + len(pemEnd) + 2
 	if end >= len(data) {
@@ -274,7 +276,7 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 
 	validate := data[len(pemStart)+len(pemEndOfLine)+len(typeLine) : len(data)]
 	if i := bytes.Index(validate, pemStart[1:]); i >= 0 {
-		return nil, nil, decodeerror(errors.New("failed to find PEM block (two \"-----BEGIN TYPE-----\" found"))
+		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (two \"-----BEGIN TYPE-----\" found"))
 	}
 	return bytes.TrimSpace(data), bytes.TrimSpace(rest), nil
 }

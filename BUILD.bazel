@@ -31,8 +31,6 @@ pkg_tar(
     },
 )
 
-# 0755
-# usr/bin/cert-viewer
 pkg_deb(
     name = "debian",
     architecture = "amd64",

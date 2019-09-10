@@ -1,3 +1,7 @@
 certviewer
-vendor
+bazel-bin
+bazel-certviewer
+bazel-genfiles
+bazel-out
+bazel-testlogs
 .vscode

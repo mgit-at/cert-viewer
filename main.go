@@ -34,13 +34,6 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
-/*
-check errors to be helpful
-
--- bazel
-
-*/
-
 // entry holds a certificate with extra information like the source or its verification.
 type entry struct {
 	cert     *x509.Certificate

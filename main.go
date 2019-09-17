@@ -81,7 +81,7 @@ type jsonEntry struct {
 	Validity       validity     `json:"validity"`
 	KeyUsage       []string     `json:"key_usage"`
 	ExtKeyUsage    []string     `json:"extended_key_usage"`
-	AltNames       []string     `json:"alternative_names"`
+	AltNames       jsonAltname  `json:"alternative_names"`
 	SubjectKeyID   string       `json:"subject_key_id"`
 	AuthorityKeyID string       `json:"authority_key_id"`
 	CA             bool         `json:"ca"`
@@ -101,6 +101,13 @@ type jsonName struct {
 	PostalCode         []string `json:"postal_code"`
 	SerialNumber       string   `json:"serial_number"`
 	CommonName         string   `json:"common_name"`
+}
+
+type jsonAltname struct {
+	DNS   []string `json:"dns"`
+	EMAIL []string `json:"email"`
+	IP    []string `json:"ip"`
+	URL   []string `json:"ulr"`
 }
 
 type decodeerror error
@@ -146,7 +153,10 @@ func run() error {
 				}
 				return nil
 			}
-			return fmt.Errorf("failed to read file %q (wrong extension)", path)
+			if !info.IsDir() {
+				return fmt.Errorf("failed to read file %q (wrong extension)", path)
+			}
+			return nil
 		})
 		if err != nil {
 			return errors.Wrap(err, "failed at file walk")
@@ -573,19 +583,19 @@ func initExtKeyUsage(cert *x509.Certificate) []string {
 }
 
 // initAltNames initializes a string slice filled with the alternative names from a x509 certificate.
-func initAltNames(cert *x509.Certificate) []string {
-	var altnames []string
+func initAltNames(cert *x509.Certificate) jsonAltname {
+	var altnames jsonAltname
 	for _, v := range cert.DNSNames {
-		altnames = append(altnames, "DNS:"+v)
+		altnames.DNS = append(altnames.DNS, v)
 	}
 	for _, v := range cert.EmailAddresses {
-		altnames = append(altnames, "EMAIL:"+v)
+		altnames.EMAIL = append(altnames.EMAIL, v)
 	}
 	for _, v := range cert.IPAddresses {
-		altnames = append(altnames, "IP:"+v.String())
+		altnames.IP = append(altnames.IP, v.String())
 	}
 	for _, v := range cert.URIs {
-		altnames = append(altnames, "URI:"+v.RawQuery)
+		altnames.URL = append(altnames.URL, v.RawQuery)
 	}
 	return altnames
 }
@@ -652,7 +662,7 @@ func printEntry(jsn jsonEntry) {
 	fmt.Println(tab, "  Not After      :", jsn.Validity.NotAfter)
 	fmt.Println(tab, "Key Usage        :", strings.Join(jsn.KeyUsage, ", "))
 	fmt.Println(tab, "Ext Key Usage    :", strings.Join(jsn.ExtKeyUsage, ", "))
-	fmt.Println(tab, "Alt Names        :", strings.Join(jsn.AltNames, ", "))
+	fmt.Println(tab, "Alt Names        :", formatAltnames(jsn.AltNames))
 	fmt.Println(tab, "Subject Key ID   :", jsn.SubjectKeyID)
 	fmt.Println(tab, "Authority Key ID :", jsn.AuthorityKeyID)
 	fmt.Println(tab, "CA               :", jsn.CA)
@@ -698,6 +708,39 @@ func formatName(val jsonName) string {
 		names = append(names, "CN = "+val.CommonName)
 	}
 	return strings.Join(names, ", ")
+}
+
+func formatAltnames(val jsonAltname) string {
+	var altnames, names []string
+
+	for _, v := range val.DNS {
+		names = append(names, "DNS:"+v)
+	}
+	if dns := strings.Join(names, ", "); dns != "" {
+		altnames = append(names, dns)
+	}
+
+	for _, v := range val.EMAIL {
+		names = append(names, "EMAIl:"+v)
+	}
+	if email := strings.Join(names, ", "); email != "" {
+		altnames = append(names, email)
+	}
+
+	for _, v := range val.IP {
+		names = append(names, "IP:"+v)
+	}
+	if ip := strings.Join(names, ", "); ip != "" {
+		altnames = append(names, ip)
+	}
+
+	for _, v := range val.URL {
+		names = append(names, "URL:"+v)
+	}
+	if url := strings.Join(names, ", "); url != "" {
+		altnames = append(names, url)
+	}
+	return strings.Join(altnames, ", ")
 }
 
 // printSources prints the source list.

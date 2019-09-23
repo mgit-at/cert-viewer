@@ -65,6 +65,7 @@ type verifiedInfo struct {
 	Info   string `json:"info"`
 }
 
+// blockInfo holds a PEM Block, the source and eventual error
 type blockInfo struct {
 	block *pem.Block
 	src   source
@@ -103,6 +104,7 @@ type jsonName struct {
 	CommonName         string   `json:"common_name"`
 }
 
+// jsonAltName string arrays for alternative certificate names
 type jsonAltname struct {
 	DNS   []string `json:"dns"`
 	EMAIL []string `json:"email"`
@@ -710,6 +712,7 @@ func formatName(val jsonName) string {
 	return strings.Join(names, ", ")
 }
 
+// formatAltnames formats a jsonAltname object to a string
 func formatAltnames(val jsonAltname) string {
 	var altnames, names []string
 

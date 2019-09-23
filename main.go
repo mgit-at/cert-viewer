@@ -514,7 +514,7 @@ func initName(name pkix.Name) jsonName {
 func initKeyUsage(val x509.KeyUsage) []string {
 	var keyusage []string
 	if val&x509.KeyUsageDigitalSignature > 0 {
-		keyusage = append(keyusage, "Digital Signiture")
+		keyusage = append(keyusage, "Digital Signature")
 	}
 	if val&x509.KeyUsageContentCommitment > 0 {
 		keyusage = append(keyusage, "Content Commitment")
@@ -535,7 +535,7 @@ func initKeyUsage(val x509.KeyUsage) []string {
 		keyusage = append(keyusage, "CRL Sign")
 	}
 	if val&x509.KeyUsageEncipherOnly > 0 {
-		keyusage = append(keyusage, "Enciper Only")
+		keyusage = append(keyusage, "Encipher Only")
 	}
 	if val&x509.KeyUsageDecipherOnly > 0 {
 		keyusage = append(keyusage, "Decipher Only")

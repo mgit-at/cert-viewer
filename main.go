@@ -720,28 +720,31 @@ func formatAltnames(val jsonAltname) string {
 		names = append(names, "DNS:"+v)
 	}
 	if dns := strings.Join(names, ", "); dns != "" {
-		altnames = append(names, dns)
+		altnames = append(altnames, dns)
 	}
 
+	names = nil
 	for _, v := range val.EMAIL {
 		names = append(names, "EMAIl:"+v)
 	}
 	if email := strings.Join(names, ", "); email != "" {
-		altnames = append(names, email)
+		altnames = append(altnames, email)
 	}
 
+	names = nil
 	for _, v := range val.IP {
 		names = append(names, "IP:"+v)
 	}
 	if ip := strings.Join(names, ", "); ip != "" {
-		altnames = append(names, ip)
+		altnames = append(altnames, ip)
 	}
 
+	names = nil
 	for _, v := range val.URL {
 		names = append(names, "URL:"+v)
 	}
 	if url := strings.Join(names, ", "); url != "" {
-		altnames = append(names, url)
+		altnames = append(altnames, url)
 	}
 	return strings.Join(altnames, ", ")
 }

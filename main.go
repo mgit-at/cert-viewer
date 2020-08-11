@@ -156,7 +156,7 @@ func run() error {
 				return nil
 			}
 			if !info.IsDir() {
-				return fmt.Errorf("failed to read file %q (wrong extension)", path)
+				return fmt.Errorf("failed to read file %q (wrong extension, supported: .cert .crt .pem .cer)", path)
 			}
 			return nil
 		})

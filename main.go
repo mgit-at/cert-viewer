@@ -157,6 +157,9 @@ func run() error {
 		}
 	}
 
+	if len(certlist) == 0 {
+		return errors.New("No certificates found")
+	}
 	if err := certlist.verifyAllCerts(*disablesysroot); err != nil {
 		return errors.Wrap(err, "failed to verify")
 	}

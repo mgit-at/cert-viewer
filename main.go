@@ -24,7 +24,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,7 +123,7 @@ func main() {
 // run runs all step: reading, decoding, parsing, logic and printing.
 func run() error {
 	var (
-		names          = kingpin.Arg("name", "filename and/or directory paths").Required().Strings()
+		names          = kingpin.Arg("name", "Filename of certificates (multiple files possible)").Required().Strings()
 		disablesysroot = kingpin.Flag("disablesysroot", "disable system root certificates from being used").Default("false").Bool()
 		jsonflag       = kingpin.Flag("json", "enable JSON output").Bool()
 	)
@@ -132,36 +131,29 @@ func run() error {
 
 	var certlist entryList
 	for _, name := range *names {
-		err := filepath.Walk(name, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return errors.Wrapf(err, "failed to read file %q", path)
-			}
-			if ext := strings.ToLower(filepath.Ext(info.Name())); ext == ".cert" || ext == ".crt" || ext == ".pem" || ext == ".cer" {
-				certpem, err := ioutil.ReadFile(path)
-				if err != nil {
-					return errors.Wrapf(err, "failed to read file %q", path)
-				}
-				nblocklist, err := decodePEM(certpem, path)
-				if err != nil {
-					return errors.Wrap(err, "failed to decode")
-				}
-
-				if err := certlist.parse(nblocklist); err != nil {
-					switch err.(type) {
-					case decodeerror:
-						return errors.Wrap(err, "failed to decode")
-					}
-					return errors.Wrap(err, "failed to parse")
-				}
-				return nil
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("failed to read file %q (wrong extension, supported: .cert .crt .pem .cer)", path)
-			}
-			return nil
-		})
+		path := name // what about symlinks?
+		info, err := os.Stat(path)
 		if err != nil {
-			return errors.Wrap(err, "failed at file walk")
+			return errors.Wrapf(err, "failed to stat file %q", path)
+		}
+		if info.IsDir() {
+			continue
+		}
+		certpem, err := ioutil.ReadFile(path)
+		if err != nil {
+			return errors.Wrapf(err, "failed to read file %q", path)
+		}
+		nblocklist, err := decodePEM(certpem, path)
+		if err != nil {
+			return errors.Wrap(err, "failed to decode")
+		}
+
+		if err := certlist.parse(nblocklist); err != nil {
+			switch err.(type) {
+			case decodeerror:
+				return errors.Wrap(err, "failed to decode")
+			}
+			return errors.Wrap(err, "failed to parse")
 		}
 	}
 

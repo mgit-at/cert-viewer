@@ -37,7 +37,7 @@ pkg_deb(
     data = ":debian-data",
     description = "Tool to view multiple x509 Certificates.",
     homepage = "https://mgit.at",
-    maintainer = "Daniel Ainikkal <dainikkal@mgit.at>",
+    maintainer = "Michael Gebetsroither <mgebetsroither@mgit.at>",
     package = "cert-viewer",
-    version = "0.1.1",
+    version = "0.9.0",
 )

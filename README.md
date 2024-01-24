@@ -1,5 +1,6 @@
 # cert-viewer
-Tool to view multiple x509 Certificates. 
+Admin tool to view and inspect multiple x509 Certificates
+
 ## Installation: 
 use either of those 2 options
 

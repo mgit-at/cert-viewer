@@ -11,10 +11,11 @@ buildGoModule rec {
 
   vendorHash = "sha256-55zDUAe5s+03/OnDcK1DqmMUpFO2sBaVjEk6vbrHgzY=";
 
-  meta = with lib; {
+  meta = {
     description = "Admin tool to view and inspect multiple x509 Certificates";
     homepage = "https://github.com/mgit-at/cert-viewer";
-    license = licenses.apsl20;
-    maintainers = with maintainers; [ mkg20001 ];
+    license = lib.licenses.apsl20;
+    maintainers = with lib.maintainers; [ mkg20001 ];
+    mainProgram = "cert-viewer";
   };
 }

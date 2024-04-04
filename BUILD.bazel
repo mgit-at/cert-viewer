@@ -1,6 +1,6 @@
+load("@gazelle//:def.bzl", "gazelle")
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "nogo")
 load("@rules_pkg//:pkg.bzl", "pkg_deb", "pkg_tar")
-load("@gazelle//:def.bzl", "gazelle")
 
 # gazelle:prefix github.com/mgit-at/cert-viewer
 gazelle(name = "gazelle")

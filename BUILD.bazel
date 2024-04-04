@@ -1,17 +1,18 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
-load("@bazel_gazelle//:def.bzl", "gazelle")
-load("@rules_pkg//:pkg.bzl", "pkg_tar", "pkg_deb")
-# gazelle:prefix github.com/example/project
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "nogo")
+load("@rules_pkg//:pkg.bzl", "pkg_deb", "pkg_tar")
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/mgit-at/cert-viewer
 gazelle(name = "gazelle")
 
 go_library(
     name = "go_default_library",
     srcs = ["main.go"],
-    importpath = "github.com/example/project",
+    importpath = "github.com/mgit-at/cert-viewer",
     visibility = ["//visibility:private"],
     deps = [
+        "@com_github_alecthomas_kingpin_v2//:go_default_library",
         "@com_github_pkg_errors//:go_default_library",
-        "@in_gopkg_alecthomas_kingpin_v2//:go_default_library",
     ],
 )
 
@@ -23,12 +24,12 @@ go_binary(
 
 pkg_tar(
     name = "debian-data",
-    extension = "tar.gz",
     srcs = [":cert-viewer"],
-    package_dir = "/usr/bin",
+    extension = "tar.gz",
     modes = {
-        "/usr/bin/cert-viewer" : "0755"
+        "/usr/bin/cert-viewer": "0755",
     },
+    package_dir = "/usr/bin",
 )
 
 pkg_deb(
@@ -39,5 +40,5 @@ pkg_deb(
     homepage = "https://mgit.at",
     maintainer = "Michael Gebetsroither <mgebetsroither@mgit.at>",
     package = "cert-viewer",
-    version = "0.9.0",
+    version = "0.9.1",
 )

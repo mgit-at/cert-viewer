@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"sort"
@@ -29,8 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/pkg/errors"
-	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 // entry holds a certificate with extra information like the source or its verification.
@@ -139,7 +138,7 @@ func run() error {
 		if info.IsDir() {
 			continue
 		}
-		certpem, err := ioutil.ReadFile(path)
+		certpem, err := os.ReadFile(path)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read file %q", path)
 		}

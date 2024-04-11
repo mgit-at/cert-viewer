@@ -9,7 +9,7 @@ buildGoModule rec {
 
   src = ./.;
 
-  vendorHash = "sha256-55zDUAe5s+03/OnDcK1DqmMUpFO2sBaVjEk6vbrHgzY=";
+  vendorHash = "sha256-jNT04bYH5L/Zcfvel673zr2UJLayCO443tvBGZjrBZk=";
 
   meta = {
     description = "Admin tool to view and inspect multiple x509 Certificates";

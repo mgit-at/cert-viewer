@@ -1,5 +1,6 @@
 { buildGoModule
 , lib
+, installShellFiles
 }:
 
 buildGoModule rec {
@@ -11,11 +12,20 @@ buildGoModule rec {
 
   vendorHash = "sha256-jNT04bYH5L/Zcfvel673zr2UJLayCO443tvBGZjrBZk=";
 
+  nativeBuildInputs = [
+    installShellFiles
+  ];
+
+  postInstall = ''
+    $out/bin/cert-viewer --help-man > cert-viewer.1
+    installManPage cert-viewer.1
+  '';
+
   meta = {
     description = "Admin tool to view and inspect multiple x509 Certificates";
     homepage = "https://github.com/mgit-at/cert-viewer";
-    license = lib.licenses.apsl20;
-    maintainers = with lib.maintainers; [ mkg20001 ];
+    license = lib.licenses.asl20;
+    maintainers = [ lib.maintainers.mkg20001 ];
     mainProgram = "cert-viewer";
   };
 }

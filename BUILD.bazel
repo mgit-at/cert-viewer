@@ -11,8 +11,8 @@ go_library(
     importpath = "github.com/mgit-at/cert-viewer",
     visibility = ["//visibility:private"],
     deps = [
-        "@com_github_alecthomas_kingpin_v2//:go_default_library",
         "@com_github_pkg_errors//:go_default_library",
+        "@com_github_spf13_pflag//:go_default_library",
     ],
 )
 

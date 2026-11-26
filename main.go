@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alecthomas/kingpin/v2"
 	"github.com/pkg/errors"
+	"github.com/spf13/pflag"
 )
 
 // entry holds a certificate with extra information like the source or its verification.
@@ -121,21 +121,37 @@ func main() {
 
 // run runs all step: reading, decoding, parsing, logic and printing.
 func run() error {
+	flags := pflag.NewFlagSet("cert-viewer", pflag.ExitOnError)
 	var (
-		names          = kingpin.Arg("name", "Filename of certificates (multiple files possible)").Required().Strings()
-		disablesysroot = kingpin.Flag("disablesysroot", "disable system root certificates from being used").Short('d').Default("false").Bool()
-		jsonflag       = kingpin.Flag("json", "enable JSON output").Short('j').Bool()
+		help           = flags.BoolP("help", "h", false, "show this help message")
+		disablesysroot = flags.BoolP("disablesysroot", "d", false, "disable system root certificates from being used")
+		jsonflag       = flags.BoolP("json", "j", false, "enable JSON output")
 	)
-	kingpin.CommandLine.HelpFlag.Short('h')
+	flags.SortFlags = false
+	flags.Usage = func() {
+		w := flags.Output()
+		fmt.Fprint(w, "usage: cert-viewer [<flags>] <name>...\n\nFlags:\n")
+		// own flag list, since pflag's FlagUsages() appends "[=true|false]" to bool flags
+		flags.VisitAll(func(f *pflag.Flag) {
+			fmt.Fprintf(w, "  -%s, --%-16s %s\n", f.Shorthand, f.Name, f.Usage)
+		})
+		fmt.Fprint(w, "\nArgs:\n  <name>  Filename of certificates (multiple files possible)\n")
+	}
+	flags.Parse(os.Args[1:]) // exits on error
+	if *help {
+		flags.SetOutput(os.Stdout)
+		flags.Usage()
+		os.Exit(0)
+	}
 	// show the help message instead of an error when called without arguments
-	if len(os.Args) < 2 {
-		kingpin.Usage()
+	if flags.NArg() == 0 {
+		flags.Usage()
 		os.Exit(1)
 	}
-	kingpin.Parse()
+	names := flags.Args()
 
 	var certlist entryList
-	for _, name := range *names {
+	for _, name := range names {
 		path := name // what about symlinks?
 		info, err := os.Stat(path)
 		if err != nil {

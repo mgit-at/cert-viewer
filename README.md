@@ -17,10 +17,9 @@ $ bazel build //:cert-viewer
 usage: cert-viewer [<flags>] <name>...
 
 Flags:
-  -h, --[no-]help            Show context-sensitive help (also try --help-long
-                             and --help-man).
-  -d, --[no-]disablesysroot  disable system root certificates from being used
-  -j, --[no-]json            enable JSON output
+  -h, --help             show this help message
+  -d, --disablesysroot   disable system root certificates from being used
+  -j, --json             enable JSON output
 
 Args:
   <name>  Filename of certificates (multiple files possible)

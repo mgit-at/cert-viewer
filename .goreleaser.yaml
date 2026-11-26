@@ -1,0 +1,79 @@
+# Release configuration, see https://goreleaser.com
+# Test locally with: goreleaser release --snapshot --clean
+version: 2
+
+project_name: cert-viewer
+
+before:
+  hooks:
+    # debian wants man pages compressed
+    - sh -c "gzip -9n -c packaging/cert-viewer.1 > packaging/cert-viewer.1.gz"
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+nfpms:
+  - package_name: cert-viewer
+    formats: [deb]
+    maintainer: Michael Gebetsroither <mgebetsroither@mgit.at>
+    description: |-
+      view and inspect multiple x509 certificates
+      Shows the certificates of one or more files (PEM or DER), sorted by
+      their certificate chains and with the result of the verification.
+    homepage: https://github.com/mgit-at/cert-viewer
+    license: Apache-2.0
+    section: utils
+    priority: optional
+    bindir: /usr/bin
+    contents:
+      - src: packaging/copyright
+        dst: /usr/share/doc/cert-viewer/copyright
+        file_info:
+          mode: 0644
+      - src: packaging/cert-viewer.1.gz
+        dst: /usr/share/man/man1/cert-viewer.1.gz
+        file_info:
+          mode: 0644
+      - src: packaging/lintian-overrides
+        dst: /usr/share/lintian/overrides/cert-viewer
+        file_info:
+          mode: 0644
+    mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+release:
+  # the release is created as draft, to be reviewed and published by hand
+  draft: true

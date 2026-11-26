@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,10 +108,13 @@ type jsonAltname struct {
 	DNS   []string `json:"dns"`
 	EMAIL []string `json:"email"`
 	IP    []string `json:"ip"`
-	URL   []string `json:"ulr"`
+	URL   []string `json:"url"`
 }
 
 type decodeerror error
+
+// set by the release build via -ldflags "-X main.version=..."
+var version = "(devel)"
 
 // main runs the run function and prints errors.
 func main() {
@@ -126,6 +130,7 @@ func run() error {
 		help           = flags.BoolP("help", "h", false, "show this help message")
 		disablesysroot = flags.BoolP("disablesysroot", "d", false, "disable system root certificates from being used")
 		jsonflag       = flags.BoolP("json", "j", false, "enable JSON output")
+		versionflag    = flags.BoolP("version", "V", false, "show the version")
 	)
 	flags.SortFlags = false
 	flags.Usage = func() {
@@ -141,6 +146,14 @@ func run() error {
 	if *help {
 		flags.SetOutput(os.Stdout)
 		flags.Usage()
+		os.Exit(0)
+	}
+	if *versionflag {
+		// binaries built with "go install" only know their module version
+		if bi, ok := debug.ReadBuildInfo(); ok && version == "(devel)" && bi.Main.Version != "" {
+			version = bi.Main.Version
+		}
+		fmt.Println("cert-viewer", version)
 		os.Exit(0)
 	}
 	// show the help message instead of an error when called without arguments
@@ -204,7 +217,7 @@ func isSelfSignedRoot(cert *x509.Certificate) bool {
 
 // compareCert compares if two certificates are the same.
 func compareCert(cert1, cert2 *x509.Certificate) bool {
-	return string(cert2.SubjectKeyId) == string(cert1.SubjectKeyId)
+	return cert1.Equal(cert2)
 }
 
 // decodePEM returns a slice of pem blocks from byte slice.
@@ -286,14 +299,7 @@ func findPEMBlock(data []byte) ([]byte, []byte, error) {
 	if len(s) != 0 {
 		return nil, nil, decodeerror(fmt.Errorf("failed to find PEM block (found non whitespace)"))
 	}
-	end := endIndex + 2*len(typeLine) + 2*len(pemEndOfLine) + len(pemStart) + len(pemEnd) + 2
-	if end >= len(data) {
-		end = len(data)
-	}
-	data = data[:end]
-	if data[len(data)-1] == '\r' {
-		data = data[:len(data)-1]
-	}
+	data = data[:len(data)-len(restOfEndLine)]
 
 	validate := data[len(pemStart)+len(pemEndOfLine)+len(typeLine) : len(data)]
 	if i := bytes.Index(validate, pemStart[1:]); i >= 0 {
@@ -613,7 +619,7 @@ func initAltNames(cert *x509.Certificate) jsonAltname {
 		altnames.IP = append(altnames.IP, v.String())
 	}
 	for _, v := range cert.URIs {
-		altnames.URL = append(altnames.URL, v.RawQuery)
+		altnames.URL = append(altnames.URL, v.String())
 	}
 	return altnames
 }
@@ -741,7 +747,7 @@ func formatAltnames(val jsonAltname) string {
 
 	names = nil
 	for _, v := range val.EMAIL {
-		names = append(names, "EMAIl:"+v)
+		names = append(names, "EMAIL:"+v)
 	}
 	if email := strings.Join(names, ", "); email != "" {
 		altnames = append(altnames, email)

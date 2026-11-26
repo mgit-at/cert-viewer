@@ -1,7 +1,9 @@
 bazel-bin
-bazel-certviewer
+bazel-cert-viewer
 bazel-genfiles
 bazel-out
 bazel-testlogs
-certviewer
+/cert-viewer
+/dist/
+/packaging/*.gz
 .vscode

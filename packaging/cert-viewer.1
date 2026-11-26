@@ -1,0 +1,67 @@
+.TH CERT\-VIEWER 1 "November 2026" "cert\-viewer" "User Commands"
+.SH NAME
+cert\-viewer \- view and inspect multiple x509 certificates
+.SH SYNOPSIS
+.B cert\-viewer
+.RI [ flags ]
+.IR file ...
+.SH DESCRIPTION
+.B cert\-viewer
+reads x509 certificates from one or more files, verifies them against each
+other and the system root certificates, and shows them sorted by their
+certificate chains.
+.PP
+A file can contain multiple PEM encoded certificates or a single DER encoded
+certificate. Other PEM blocks, like private keys, are ignored, as are
+directories. A certificate found in more than one file or block is shown once
+with all its sources.
+.PP
+Each chain is shown from the leaf certificate up to its root, indented by its
+depth. Self signed CA certificates from the given files are trusted like
+system root certificates. Certificates which could not be verified are shown
+last, together with the reason.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show the help message.
+.TP
+.BR \-d ", " \-\-disablesysroot
+Do not use the system root certificates for the verification.
+.TP
+.BR \-j ", " \-\-json
+Print the certificates as JSON.
+.TP
+.BR \-V ", " \-\-version
+Show the version.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, also if certificates could not be verified.
+.TP
+.B 1
+A file could not be read or parsed, no certificate was found, or no file was
+given.
+.TP
+.B 2
+Invalid command line flags.
+.SH EXAMPLES
+Show a certificate together with its chain:
+.PP
+.RS
+.B cert\-viewer server.crt chain.pem
+.RE
+.PP
+Show the expiry date of all certificates of a file, using
+.BR jq (1):
+.PP
+.RS
+.nf
+.B cert\-viewer \-\-json fullchain.pem | \e
+.B "  jq \-r \(aq.[] | [.validity.not_after, .subject.common_name] | @tsv\(aq"
+.fi
+.RE
+.SH SEE ALSO
+.BR openssl\-x509 (1)
+.PP
+.nh
+https://github.com/mgit\-at/cert\-viewer

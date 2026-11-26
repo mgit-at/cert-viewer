@@ -1,0 +1,4 @@
+# Go binaries are statically linked
+cert-viewer: statically-linked-binary [usr/bin/cert-viewer]
+# the changelog is part of the GitHub release
+cert-viewer: no-changelog usr/share/doc/cert-viewer/changelog.gz (native package)

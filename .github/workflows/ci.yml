@@ -22,6 +22,20 @@ jobs:
         run: go mod tidy -diff
       - run: go vet ./...
       - run: go build ./...
+      - run: go test -race ./...
+
+  # unit and integration tests on all platforms we release binaries for
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
       - run: go test ./...
 
   bazel:
@@ -34,3 +48,42 @@ jobs:
           repository-cache: true
       - name: bazel build
         run: bazel build --lockfile_mode=error //...
+      - name: bazel test
+        run: bazel test --lockfile_mode=error //...
+
+  # build all release artifacts without publishing them and test the debian package
+  release-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: test debian package
+        run: |
+          ls -l dist/
+          dpkg-deb --info dist/cert-viewer_*_linux_amd64.deb
+          dpkg-deb --contents dist/cert-viewer_*_linux_amd64.deb
+          sudo apt-get install -y --no-install-recommends lintian
+          lintian --fail-on error,warning dist/cert-viewer_*.deb
+          sudo dpkg -i dist/cert-viewer_*_linux_amd64.deb
+          test "$(command -v cert-viewer)" = /usr/bin/cert-viewer
+          cert-viewer --version
+          cert-viewer /etc/ssl/certs/ca-certificates.crt > /dev/null
+          cert-viewer --json /etc/ssl/certs/ca-certificates.crt | jq -e 'length > 0'
+          sudo dpkg -r cert-viewer
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/checksums.txt
+          retention-days: 7

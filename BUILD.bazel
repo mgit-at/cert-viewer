@@ -1,6 +1,8 @@
 load("@gazelle//:def.bzl", "gazelle")
-load("@rules_go//go:def.bzl", "go_binary", "go_library", "nogo")
-load("@rules_pkg//:pkg.bzl", "pkg_deb", "pkg_tar")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+# Releases (binaries and debian packages) are built with goreleaser, see .goreleaser.yaml.
+# The bazel build is only kept as reference, it builds and tests an unversioned binary.
 
 # gazelle:prefix github.com/mgit-at/cert-viewer
 gazelle(name = "gazelle")
@@ -13,29 +15,18 @@ go_library(
     deps = ["@com_github_spf13_pflag//:go_default_library"],
 )
 
+go_test(
+    name = "go_default_test",
+    size = "small",
+    srcs = [
+        "integration_test.go",
+        "main_test.go",
+    ],
+    embed = [":go_default_library"],
+)
+
 go_binary(
     name = "cert-viewer",
     embed = [":go_default_library"],
     visibility = ["//visibility:public"],
-)
-
-pkg_tar(
-    name = "debian-data",
-    srcs = [":cert-viewer"],
-    extension = "tar.gz",
-    modes = {
-        "/usr/bin/cert-viewer": "0755",
-    },
-    package_dir = "/usr/bin",
-)
-
-pkg_deb(
-    name = "debian",
-    architecture = "amd64",
-    data = ":debian-data",
-    description = "Tool to view multiple x509 Certificates.",
-    homepage = "https://mgit.at",
-    maintainer = "Michael Gebetsroither <mgebetsroither@mgit.at>",
-    package = "cert-viewer",
-    version = "0.9.1",
 )

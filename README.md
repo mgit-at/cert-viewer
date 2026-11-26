@@ -6,7 +6,7 @@ use either of those 2 options
 
 ### Go:
 ```sh 
-$ go get github.com/mgit-at/cert-viewer
+$ go install github.com/mgit-at/cert-viewer@latest
 ```
 ### Bazel: 
 ```sh 

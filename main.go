@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -28,7 +29,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 )
 
@@ -155,26 +155,26 @@ func run() error {
 		path := name // what about symlinks?
 		info, err := os.Stat(path)
 		if err != nil {
-			return errors.Wrapf(err, "failed to stat file %q", path)
+			return fmt.Errorf("failed to stat file %q: %w", path, err)
 		}
 		if info.IsDir() {
 			continue
 		}
 		certpem, err := os.ReadFile(path)
 		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", path)
+			return fmt.Errorf("failed to read file %q: %w", path, err)
 		}
 		nblocklist, err := decodePEM(certpem, path)
 		if err != nil {
-			return errors.Wrap(err, "failed to decode")
+			return fmt.Errorf("failed to decode: %w", err)
 		}
 
 		if err := certlist.parse(nblocklist); err != nil {
 			switch err.(type) {
 			case decodeerror:
-				return errors.Wrap(err, "failed to decode")
+				return fmt.Errorf("failed to decode: %w", err)
 			}
-			return errors.Wrap(err, "failed to parse")
+			return fmt.Errorf("failed to parse: %w", err)
 		}
 	}
 
@@ -182,14 +182,14 @@ func run() error {
 		return errors.New("No certificates found")
 	}
 	if err := certlist.verifyAllCerts(*disablesysroot); err != nil {
-		return errors.Wrap(err, "failed to verify")
+		return fmt.Errorf("failed to verify: %w", err)
 	}
 
 	chain := certlist.mergeChain()
 	jl := certlist.initJSONList(chain)
 
 	if err := jl.printAll(*jsonflag); err != nil {
-		return errors.Wrap(err, "failed to print")
+		return fmt.Errorf("failed to print: %w", err)
 	}
 	return nil
 }
@@ -214,7 +214,7 @@ func decodePEM(certPEM []byte, filename string) ([]blockInfo, error) {
 	for i := 1; ; i++ {
 		data, rest, err := findPEMBlock(certPEM)
 		if err != nil {
-			derror = errors.Wrapf(err, "failed at file %q at block %q", filename, strconv.Itoa(i))
+			derror = fmt.Errorf("failed at file %q at block %q: %w", filename, strconv.Itoa(i), err)
 			if len(blocklist) == 0 {
 				block := pem.Block{Bytes: certPEM}
 				blocklist = append(blocklist, blockInfo{&block, source{filename, 1}, derror})
@@ -333,7 +333,7 @@ nextBlock:
 			if bi.err != nil {
 				return bi.err
 			}
-			return errors.Wrapf(err, "failed to parse block %q, in file %q", strconv.Itoa(bi.src.Position), bi.src.Name)
+			return fmt.Errorf("failed to parse block %q, in file %q: %w", strconv.Itoa(bi.src.Position), bi.src.Name, err)
 		}
 
 		for idx, ent := range *el {
@@ -371,11 +371,11 @@ func (el entryList) verifyAllCerts(disablesysroot bool) error {
 				continue
 			}
 			curentry.chain, curentry.verified = verify(curentry, pool, roots)
-			switch errors.Cause(curentry.verified).(type) {
-			case x509.SystemRootsError:
-				return curentry.verified
-			case nil:
+			switch {
+			case curentry.verified == nil:
 				wip = true
+			case errors.As(curentry.verified, new(x509.SystemRootsError)):
+				return curentry.verified
 			default:
 				notdone = true
 			}
@@ -645,7 +645,7 @@ func (jl jsonList) printAll(jsonflag bool) error {
 func (jl jsonList) printJSON() error {
 	data, err := json.MarshalIndent(jl, "", "  ")
 	if err != nil {
-		return errors.Wrap(err, "failed to convert to json")
+		return fmt.Errorf("failed to convert to json: %w", err)
 	}
 	fmt.Println(string(data))
 	return nil

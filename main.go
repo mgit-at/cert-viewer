@@ -123,9 +123,15 @@ func main() {
 func run() error {
 	var (
 		names          = kingpin.Arg("name", "Filename of certificates (multiple files possible)").Required().Strings()
-		disablesysroot = kingpin.Flag("disablesysroot", "disable system root certificates from being used").Default("false").Bool()
-		jsonflag       = kingpin.Flag("json", "enable JSON output").Bool()
+		disablesysroot = kingpin.Flag("disablesysroot", "disable system root certificates from being used").Short('d').Default("false").Bool()
+		jsonflag       = kingpin.Flag("json", "enable JSON output").Short('j').Bool()
 	)
+	kingpin.CommandLine.HelpFlag.Short('h')
+	// show the help message instead of an error when called without arguments
+	if len(os.Args) < 2 {
+		kingpin.Usage()
+		os.Exit(1)
+	}
 	kingpin.Parse()
 
 	var certlist entryList

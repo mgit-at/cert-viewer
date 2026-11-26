@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -28,8 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alecthomas/kingpin/v2"
-	"github.com/pkg/errors"
+	"github.com/spf13/pflag"
 )
 
 // entry holds a certificate with extra information like the source or its verification.
@@ -121,38 +121,60 @@ func main() {
 
 // run runs all step: reading, decoding, parsing, logic and printing.
 func run() error {
+	flags := pflag.NewFlagSet("cert-viewer", pflag.ExitOnError)
 	var (
-		names          = kingpin.Arg("name", "Filename of certificates (multiple files possible)").Required().Strings()
-		disablesysroot = kingpin.Flag("disablesysroot", "disable system root certificates from being used").Default("false").Bool()
-		jsonflag       = kingpin.Flag("json", "enable JSON output").Bool()
+		help           = flags.BoolP("help", "h", false, "show this help message")
+		disablesysroot = flags.BoolP("disablesysroot", "d", false, "disable system root certificates from being used")
+		jsonflag       = flags.BoolP("json", "j", false, "enable JSON output")
 	)
-	kingpin.Parse()
+	flags.SortFlags = false
+	flags.Usage = func() {
+		w := flags.Output()
+		fmt.Fprint(w, "usage: cert-viewer [<flags>] <name>...\n\nFlags:\n")
+		// own flag list, since pflag's FlagUsages() appends "[=true|false]" to bool flags
+		flags.VisitAll(func(f *pflag.Flag) {
+			fmt.Fprintf(w, "  -%s, --%-16s %s\n", f.Shorthand, f.Name, f.Usage)
+		})
+		fmt.Fprint(w, "\nArgs:\n  <name>  Filename of certificates (multiple files possible)\n")
+	}
+	flags.Parse(os.Args[1:]) // exits on error
+	if *help {
+		flags.SetOutput(os.Stdout)
+		flags.Usage()
+		os.Exit(0)
+	}
+	// show the help message instead of an error when called without arguments
+	if flags.NArg() == 0 {
+		flags.Usage()
+		os.Exit(1)
+	}
+	names := flags.Args()
 
 	var certlist entryList
-	for _, name := range *names {
+	for _, name := range names {
 		path := name // what about symlinks?
 		info, err := os.Stat(path)
 		if err != nil {
-			return errors.Wrapf(err, "failed to stat file %q", path)
+			return fmt.Errorf("failed to stat file %q: %w", path, err)
 		}
 		if info.IsDir() {
 			continue
 		}
 		certpem, err := os.ReadFile(path)
 		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", path)
+			return fmt.Errorf("failed to read file %q: %w", path, err)
 		}
 		nblocklist, err := decodePEM(certpem, path)
 		if err != nil {
-			return errors.Wrap(err, "failed to decode")
+			return fmt.Errorf("failed to decode: %w", err)
 		}
 
 		if err := certlist.parse(nblocklist); err != nil {
 			switch err.(type) {
 			case decodeerror:
-				return errors.Wrap(err, "failed to decode")
+				return fmt.Errorf("failed to decode: %w", err)
 			}
-			return errors.Wrap(err, "failed to parse")
+			return fmt.Errorf("failed to parse: %w", err)
 		}
 	}
 
@@ -160,14 +182,14 @@ func run() error {
 		return errors.New("No certificates found")
 	}
 	if err := certlist.verifyAllCerts(*disablesysroot); err != nil {
-		return errors.Wrap(err, "failed to verify")
+		return fmt.Errorf("failed to verify: %w", err)
 	}
 
 	chain := certlist.mergeChain()
 	jl := certlist.initJSONList(chain)
 
 	if err := jl.printAll(*jsonflag); err != nil {
-		return errors.Wrap(err, "failed to print")
+		return fmt.Errorf("failed to print: %w", err)
 	}
 	return nil
 }
@@ -192,7 +214,7 @@ func decodePEM(certPEM []byte, filename string) ([]blockInfo, error) {
 	for i := 1; ; i++ {
 		data, rest, err := findPEMBlock(certPEM)
 		if err != nil {
-			derror = errors.Wrapf(err, "failed at file %q at block %q", filename, strconv.Itoa(i))
+			derror = fmt.Errorf("failed at file %q at block %q: %w", filename, strconv.Itoa(i), err)
 			if len(blocklist) == 0 {
 				block := pem.Block{Bytes: certPEM}
 				blocklist = append(blocklist, blockInfo{&block, source{filename, 1}, derror})
@@ -311,7 +333,7 @@ nextBlock:
 			if bi.err != nil {
 				return bi.err
 			}
-			return errors.Wrapf(err, "failed to parse block %q, in file %q", strconv.Itoa(bi.src.Position), bi.src.Name)
+			return fmt.Errorf("failed to parse block %q, in file %q: %w", strconv.Itoa(bi.src.Position), bi.src.Name, err)
 		}
 
 		for idx, ent := range *el {
@@ -349,11 +371,11 @@ func (el entryList) verifyAllCerts(disablesysroot bool) error {
 				continue
 			}
 			curentry.chain, curentry.verified = verify(curentry, pool, roots)
-			switch errors.Cause(curentry.verified).(type) {
-			case x509.SystemRootsError:
-				return curentry.verified
-			case nil:
+			switch {
+			case curentry.verified == nil:
 				wip = true
+			case errors.As(curentry.verified, new(x509.SystemRootsError)):
+				return curentry.verified
 			default:
 				notdone = true
 			}
@@ -623,7 +645,7 @@ func (jl jsonList) printAll(jsonflag bool) error {
 func (jl jsonList) printJSON() error {
 	data, err := json.MarshalIndent(jl, "", "  ")
 	if err != nil {
-		return errors.Wrap(err, "failed to convert to json")
+		return fmt.Errorf("failed to convert to json: %w", err)
 	}
 	fmt.Println(string(data))
 	return nil

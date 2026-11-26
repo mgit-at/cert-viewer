@@ -1,6 +1,3 @@
-# enable using bazel modules
-build --enable_bzlmod
-
 # disable convenience symlinks, since the huge amount of files
 # and frequent updates cause troubles with many editors and tools.
 build --symlink_prefix=/
@@ -10,9 +7,6 @@ common --repository_cache=~/.cache/bazel-repo
 
 # global disk_cache for build artifacts
 common --disk_cache=~/.cache/bazel-disk
-
-# force Python 2 (some rules are not yet compatible with Python 3)
-build --python_path=/usr/bin/python2 --host_force_python=PY2
 
 # do not strip binaries for easier debugging in production
 build --strip=never

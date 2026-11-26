@@ -6,7 +6,7 @@ use either of those 2 options
 
 ### Go:
 ```sh 
-$ go get github.com/mgit-at/cert-viewer
+$ go install github.com/mgit-at/cert-viewer@latest
 ```
 ### Bazel: 
 ```sh 
@@ -17,10 +17,10 @@ $ bazel build //:cert-viewer
 usage: cert-viewer [<flags>] <name>...
 
 Flags:
-  --help            Show context-sensitive help (also try --help-long and --help-man).
-  --disablesysroot  disable system root certificates from being used
-  --json            enable JSON output
+  -h, --help             show this help message
+  -d, --disablesysroot   disable system root certificates from being used
+  -j, --json             enable JSON output
 
 Args:
-  <name>  filename and/or directory paths
+  <name>  Filename of certificates (multiple files possible)
 ```
